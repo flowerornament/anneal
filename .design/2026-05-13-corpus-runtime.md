@@ -3484,7 +3484,9 @@ flag selects among these states: requiring an agent to carry repository mode
 would violate CR-D4. History semantics for a jj workspace are CR-D113.
 
 **Definition CR-D113 (History semantics in a jj workspace).**
-A jj workspace's working copy is itself a commit, `@`. Every history operation
+A colocated added workspace is a Git worktree and takes the Git provider at
+the same boundary (CR-D111); jj-only semantics apply to workspaces without
+`.git`. A jj workspace's working copy is itself a commit, `@`. Every history operation
 in a jj workspace is answered against the workspace's own recorded `@`, through
 the Git directory resolved by CR-D111. The colocated anchor's checkout and
 index are never consulted: an anchor only has to exist, not to be current.

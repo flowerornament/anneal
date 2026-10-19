@@ -694,6 +694,8 @@ mod tests {
                     "user.name='Test'",
                     "--config",
                     "user.email='test@example.com'",
+                    "--config",
+                    "git.colocate=false",
                 ]);
             }
             let output = command.args(args).output().expect("fixture command");
@@ -708,6 +710,7 @@ mod tests {
         vcs(&anchor, "git", &["commit", "--quiet", "-m", "baseline"]);
         vcs(&anchor, "jj", &["git", "init", "--colocate"]);
         vcs(&anchor, "jj", &["workspace", "add", desk.as_str()]);
+        assert!(!desk.join(".git").exists(), "fixture must be jj-only");
         fs::remove_file(desk.join("lib/old.rs")).expect("remove target");
         vcs(&desk, "jj", &["describe", "-m", "remove"]);
         let root = desk.join(".design");

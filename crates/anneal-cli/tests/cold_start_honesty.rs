@@ -987,11 +987,116 @@ fn fixture_vcs(root: &Path, program: &str, args: &[&str]) -> String {
             "user.name='Test'",
             "--config",
             "user.email='test@example.com'",
+            "--config",
+            "git.colocate=false",
         ]);
     }
     let output = command.args(args).output().expect("fixture vcs command");
     assert_success(&output);
     text(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn real_colocated_jj_desk_uses_its_own_git_provider_and_head() {
+    let help = Command::new("jj")
+        .args(["workspace", "add", "--help"])
+        .output();
+    let supports_colocation = match help {
+        Ok(output) if output.status.success() => text(&output.stdout).contains("--colocate"),
+        _ => {
+            assert!(
+                std::env::var_os("ANNEAL_REQUIRE_JJ").is_none(),
+                "colocated jj fixture requires jj (ANNEAL_REQUIRE_JJ)"
+            );
+            false
+        }
+    };
+    if !supports_colocation {
+        eprintln!("colocated jj fixture skipped: jj cannot colocate an added workspace");
+        return;
+    }
+    let dir = tempdir();
+    let anchor = dir.path().join("anchor");
+    std::fs::create_dir_all(&anchor).expect("mkdir");
+    write_file(&anchor, ".design/spec.md", "# Spec\n[next](next.md)\n");
+    write_file(&anchor, ".design/next.md", "# Next\n");
+    fixture_vcs(&anchor, "git", &["init", "--quiet"]);
+    fixture_vcs(&anchor, "git", &["add", "."]);
+    fixture_vcs(&anchor, "git", &["commit", "--quiet", "-m", "baseline"]);
+    let anchor_head = fixture_vcs(&anchor, "git", &["rev-parse", "HEAD"]);
+    fixture_vcs(&anchor, "jj", &["git", "init", "--colocate"]);
+    let desk = dir.path().join("desk");
+    fixture_vcs(
+        &anchor,
+        "jj",
+        &[
+            "workspace",
+            "add",
+            "--colocate",
+            desk.to_str().expect("utf8"),
+        ],
+    );
+    assert!(desk.join(".git").exists(), "fixture must be colocated");
+    write_file(&desk, ".design/desk-only.md", "# Desk only\n");
+    fixture_vcs(&desk, "jj", &["describe", "-m", "desk change"]);
+    fixture_vcs(&desk, "jj", &["new"]);
+    let head = fixture_vcs(&desk, "git", &["rev-parse", "HEAD"]);
+    assert_ne!(head, anchor_head, "desk must disagree with anchor");
+    assert_eq!(
+        head,
+        fixture_vcs(
+            &desk,
+            "jj",
+            &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]
+        )
+    );
+    assert_eq!(
+        Path::new(&fixture_vcs(
+            &desk,
+            "git",
+            &["rev-parse", "--show-toplevel"]
+        )),
+        desk.canonicalize().expect("canonical desk")
+    );
+    let root = desk.join(".design");
+    let root = root.to_str().expect("utf8");
+    let capabilities = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? repository_operation_capability(operation, availability, provider, reason).",
+    ]));
+    for operation in [
+        "change_history",
+        "target_history",
+        "ignore_index",
+        "assertion_blame",
+    ] {
+        assert!(
+            capabilities.iter().any(|row| row["operation"] == operation
+                && row["provider"] == "git"
+                && row["availability"] == "available"
+                && row["reason"] == "direct-git-worktree"),
+            "{capabilities:#?}"
+        );
+    }
+    let handles = json_rows(&run(&["--root", root, "--json", "-e", "? *handle{id: h}."]));
+    assert!(handles.iter().any(|row| row["h"] == "desk-only.md"));
+    assert!(!anchor.join(".design/desk-only.md").exists());
+    let edges = json_rows(&run(&[
+        "--root",
+        root,
+        "--json",
+        "-e",
+        "? *edge{to: \"next.md\", assertion_date: date, assertion_revision: revision}.",
+    ]));
+    assert!(!edges.is_empty());
+    assert!(
+        edges
+            .iter()
+            .all(|row| !row["date"].is_null() && !row["revision"].is_null())
+    );
 }
 
 #[test]
@@ -1039,6 +1144,7 @@ fn real_jj_desk_uses_own_pin_mount_origins_and_ignore_rules_with_null_provenance
         "jj",
         &["workspace", "add", desk.to_str().expect("utf8")],
     );
+    assert!(!desk.join(".git").exists(), "fixture must be jj-only");
     std::fs::remove_file(desk.join("lib/old.rs")).expect("remove target only at desk");
     fixture_vcs(&desk, "jj", &["describe", "-m", "remove target"]);
     // These are unsnapshotted: the pin still supplies tracked-ness and history.

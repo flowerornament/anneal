@@ -1260,7 +1260,8 @@ struct RepositoryFixture {
 }
 
 fn repository_command(root: &Utf8Path, program: &str, args: &[&str]) -> String {
-    let output = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .current_dir(root)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
@@ -1268,7 +1269,11 @@ fn repository_command(root: &Utf8Path, program: &str, args: &[&str]) -> String {
         .env("GIT_AUTHOR_NAME", "Test")
         .env("GIT_AUTHOR_EMAIL", "test@example.test")
         .env("GIT_COMMITTER_NAME", "Test")
-        .env("GIT_COMMITTER_EMAIL", "test@example.test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.test");
+    if program == "jj" {
+        command.args(["--config", "git.colocate=false"]);
+    }
+    let output = command
         .args(args)
         .output()
         .expect("repository fixture command");
@@ -1311,6 +1316,7 @@ fn repository_fixture() -> Option<RepositoryFixture> {
     repository_command(&anchor, "git", &["tag", "parent-tag"]);
     repository_command(&anchor, "jj", &["git", "init", "--colocate"]);
     repository_command(&anchor, "jj", &["workspace", "add", desk.as_str()]);
+    assert!(!desk.join(".git").exists(), "fixture must be jj-only");
     fs::write(desk.join("home-only.rs"), "pub fn unrelated() {}\n").expect("unrelated file");
     repository_command(
         &outer,

@@ -197,8 +197,10 @@ so there is nothing to stage.
 - Every description gains `Jj-Workspace:`, `Agent:` and `Session:` trailers
   from `scripts/jj-identity`, which a SessionStart hook runs. Do not type or
   strip them.
-- Git runs only in `~/code/anneal`. A jj workspace has no `.git`, and `~/.git`
-  exists, so git in a workspace silently answers about the home directory.
+- Git runs only in `~/code/anneal`. A jj-only workspace (added
+  with `--no-colocate`) has no `.git`, and `~/.git` exists, so bare git there
+  silently answers about the home directory. jj 0.46 defaults new workspaces
+  of a colocated repository to Git worktrees, which read as the Git provider.
   Never run a mutating git command, with one exception: releases run from
   `~/code/anneal` after `jj git fetch && jj new master` (see Release Flow;
   `scripts/release.py` tags and pushes with git there).
@@ -209,7 +211,7 @@ so there is nothing to stage.
   moving pins make dependent operations unavailable. See CR-D113.
 - The git-fixture tests (anneal-re9h, fixed) strip `GIT_DIR` and work in their
   own tempdir repositories, so `just check` is safe in a jj workspace.
-- New jj workspace: `jj workspace add --name anneal-<pair><letter>
+- New jj workspace: `jj workspace add --no-colocate --name anneal-<pair><letter>
   ../anneal-<pair><letter>`, write `../anneal/.beads` into its
   `.beads/redirect`, and link Claude's memory:
   `ln -s ~/.claude/projects/-Users-morgan-code-anneal/memory

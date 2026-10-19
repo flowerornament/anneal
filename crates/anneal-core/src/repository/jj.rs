@@ -344,6 +344,8 @@ mod tests {
                 "user.name='Test'",
                 "--config",
                 "user.email='test@example.com'",
+                "--config",
+                "git.colocate=false",
             ]);
         }
         let output = command.args(args).output().expect("fixture command");
@@ -383,6 +385,7 @@ mod tests {
         let base = run(&anchor, "git", &["rev-parse", "HEAD"]);
         run(&anchor, "jj", &["git", "init", "--colocate"]);
         run(&anchor, "jj", &["workspace", "add", root.as_str()]);
+        assert!(!root.join(".git").exists(), "fixture must be jj-only");
         Some(Desk {
             _temp: temp,
             anchor,
