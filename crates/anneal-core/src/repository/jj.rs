@@ -19,11 +19,12 @@ pub(super) struct JjEvidence {
     failures: [OnceLock<&'static str>; 5],
 }
 
-fn jj_command(root: &Utf8Path) -> Command {
+fn jj_command(root: &Utf8Path, operation: &str) -> Command {
     let mut command = Command::new("jj");
     command.args([
         "--ignore-working-copy",
-        "--at-op=@",
+        "--at-operation",
+        operation,
         "--color=never",
         "--no-pager",
         "--repository",
@@ -41,7 +42,7 @@ fn stdout(command: &mut Command) -> Option<String> {
 }
 
 fn read_pin(root: &Utf8Path) -> Result<String, &'static str> {
-    let current = stdout(jj_command(root).args([
+    let current = stdout(jj_command(root, "@").args([
         "log",
         "-r",
         "@",
@@ -63,12 +64,10 @@ fn read_pin(root: &Utf8Path) -> Result<String, &'static str> {
     }
     // Compare the workspace's recorded operation with today's view of its @.
     // Debug metadata is read-only; unsupported layouts fail closed.
-    let working = stdout(jj_command(root).args(["debug", "working-copy"]))
+    let working = stdout(jj_command(root, "@").args(["debug", "working-copy"]))
         .ok_or("jj-workspace-state-unreadable")?;
     let operation = working_copy_operation(&working)?;
-    let recorded = stdout(jj_command(root).args([
-        "--at-operation",
-        operation,
+    let recorded = stdout(jj_command(root, operation).args([
         "log",
         "-r",
         "@",
@@ -387,6 +386,26 @@ mod tests {
             root,
             base,
         })
+    }
+
+    #[test]
+    fn operation_commands_have_one_explicit_selector() {
+        for operation in ["@", &"a".repeat(128)] {
+            let command = jj_command(Utf8Path::new("."), operation);
+            let args = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                args.iter().filter(|arg| arg.starts_with("--at-op")).count(),
+                1
+            );
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair == ["--at-operation", operation])
+            );
+            assert!(args.iter().any(|arg| arg == "--ignore-working-copy"));
+        }
     }
 
     #[test]

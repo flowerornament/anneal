@@ -6,6 +6,9 @@ All notable changes to `anneal` are documented in this file.
 
 ### Fixed
 
+- jj history reads use one explicit operation selector per invocation, including
+  the recorded workspace view, with compatibility for jj 0.39 from `flake.lock`.
+
 - Repository instruments refuse ancestor Git repositories from jj-only desks.
   Atlas, citation auditing, release tagging and Home Manager smoke checks validate
   their checkout boundary and discard inherited Git root/index overrides. Release
