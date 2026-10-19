@@ -4,6 +4,12 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Interned text is stored once and shared between the symbol index and the
+  symbol table instead of being copied into both; symbols, ids and ordering are
+  unchanged.
+
 ### Fixed
 
 - File asset handles derive their native identity, file, origin, revision and area
