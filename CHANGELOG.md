@@ -4,6 +4,11 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Fixed
+
+- Markdown references answered by sibling-file resolution or a successful
+  cascade do not also emit phantom unresolved edges and broken-link diagnostics.
+
 ## v0.28.0 - 2026-10-19
 
 ### Changed

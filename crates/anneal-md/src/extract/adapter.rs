@@ -1789,7 +1789,7 @@ fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
         &mut remaining,
         &mut ordered,
     );
-    take_cascade_edges(
+    let cascade_answered = take_cascade_edges(
         context.result,
         context.node_index,
         context.cascade_results,
@@ -1811,8 +1811,16 @@ fn plan_ordered_edges(context: &EdgeOrderContext<'_>) -> Vec<PlannedEdge> {
         });
     }
 
-    for edge in &context.result.resolution.pending_edges {
-        if context.node_index.contains_key(&edge.target_identity) {
+    for (index, edge) in context.result.resolution.pending_edges.iter().enumerate() {
+        if resolve_pending_target(
+            context.root,
+            context.result,
+            context.pre_cascade_index,
+            edge,
+        )
+        .is_some()
+            || cascade_answered.contains(&index)
+        {
             continue;
         }
         if edge.unresolved_disposition == UnresolvedRefDisposition::AmbiguousExternalOk {
@@ -2007,7 +2015,8 @@ fn take_cascade_edges(
     cascade_results: &[crate::extract::resolve::CascadeResult],
     remaining: &mut OrderedEdges,
     ordered: &mut Vec<OrderedEdge>,
-) {
+) -> HashSet<usize> {
+    let mut answered = HashSet::new();
     for cascade in cascade_results {
         let Some(edge) = result.resolution.pending_edges.get(cascade.edge_index) else {
             continue;
@@ -2029,10 +2038,12 @@ fn take_cascade_edges(
                 &edge.kind,
                 edge.line.unwrap_or(0),
             ) {
+                answered.insert(cascade.edge_index);
                 break;
             }
         }
     }
+    answered
 }
 
 fn take_edge(
@@ -2629,6 +2640,118 @@ mod tests {
     };
     use crate::EdgeAssertionRefreshProgressSink;
     use crate::extract::adapter::extract_markdown_facts_with_options;
+
+    #[test]
+    fn answered_sibling_reference_does_not_leave_a_phantom_edge() {
+        let temp = tempfile::Builder::new()
+            .prefix("anneal-answered-")
+            .tempdir()
+            .expect("fixture");
+        let root = Utf8Path::from_path(temp.path()).expect("UTF-8 fixture");
+        std::fs::create_dir(root.join("docs")).expect("docs");
+        std::fs::write(root.join("docs/next.md"), "# Next\n").expect("target");
+        std::fs::write(
+            root.join("docs/same.md"),
+            "# Source\n[sibling](next.md)\n[missing](absent.md)\n",
+        )
+        .expect("source");
+        let batch = extract_markdown_facts(
+            root,
+            CorpusId::from("test"),
+            SourceName::from("markdown"),
+            Generation::new(1),
+        )
+        .expect("facts");
+        let edges: Vec<_> = batch
+            .edges
+            .iter()
+            .filter(|edge| edge.from.as_str() == "docs/same.md")
+            .collect();
+        assert_eq!(
+            edges.len(),
+            2,
+            "one answered link plus one genuinely missing link: {edges:?}"
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.to.as_str() == "docs/next.md")
+                .count(),
+            1
+        );
+        assert_eq!(
+            edges
+                .iter()
+                .filter(|edge| edge.to.as_str() == "absent.md")
+                .count(),
+            1
+        );
+        assert!(!edges.iter().any(|edge| edge.to.as_str() == "next.md"));
+    }
+
+    #[test]
+    fn only_a_consumed_cascade_edge_answers_a_pending_attempt() {
+        let temp = tempfile::Builder::new()
+            .prefix("anneal-cascade-")
+            .tempdir()
+            .expect("fixture");
+        let root = Utf8Path::from_path(temp.path()).expect("UTF-8 fixture");
+        std::fs::write(root.join("source.md"), "# Source\n[link](placeholder.md)\n")
+            .expect("source");
+        std::fs::write(root.join("target.md"), "# Target\n").expect("target");
+        let config = super::config::AnnealConfig::default();
+        let mut result = super::parse::build_graph(root, &config).expect("graph");
+        // Exercise the cascade seam directly: normal Markdown absolute paths
+        // are normalized earlier, but pending attempts can retain a root prefix.
+        result.resolution.pending_edges[0].target_identity = format!("{root}/target.md");
+        let index = crate::extract::resolve::resolve_nodes(
+            &mut result.graph,
+            &result.resolution.label_candidates,
+            &config,
+        );
+        let cascades = crate::extract::resolve::cascade_unresolved(
+            &mut result.graph,
+            &result.resolution.pending_edges,
+            &index,
+            root.as_str(),
+        );
+        let node_index = crate::extract::resolve::build_node_index(&result.graph);
+        let context = super::EdgeOrderContext {
+            root,
+            config: &config,
+            result: &result,
+            pre_cascade_index: &index,
+            node_index: &node_index,
+            cascade_results: &cascades,
+        };
+        let planned = super::plan_ordered_edges(&context);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].to, "target.md");
+
+        // A candidate without a corresponding graph edge is evidence, not an answer.
+        let mut unresolved = super::parse::build_graph(root, &config).expect("unresolved graph");
+        unresolved.resolution.pending_edges[0].target_identity = "missing-v2.md".into();
+        let index = crate::extract::resolve::resolve_nodes(
+            &mut unresolved.graph,
+            &unresolved.resolution.label_candidates,
+            &config,
+        );
+        let candidates = [crate::extract::resolve::CascadeResult {
+            edge_index: 0,
+            candidates: vec!["target.md".into()],
+        }];
+        let context = super::EdgeOrderContext {
+            root,
+            config: &config,
+            result: &unresolved,
+            pre_cascade_index: &index,
+            node_index: &index,
+            cascade_results: &candidates,
+        };
+        let planned = super::plan_ordered_edges(&context);
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].to, "missing-v2.md");
+    }
 
     #[test]
     fn released_markdown_edge_identity_bytes_are_pinned() {
