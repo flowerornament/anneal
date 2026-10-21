@@ -3447,9 +3447,16 @@ CR-D115 applies the same existence seam to named repository mounts.
 
 **Definition CR-D115 (Named Markdown repository mounts).** A `source md`
 block may contain `mount "alias" { path("../repository"). scan_root("docs"). }`.
-`path` is relative to the declaring host's enclosing project boundary, not to
-the process directory or the location of `anneal.dl`. It MUST resolve to a
-validated Git or jj repository root. `scan_root` selects repository-relative
+A relative `path` is based on the declaring host's enclosing project boundary,
+not the process directory or location of `anneal.dl`. An absolute path is also
+accepted; a leading `~/` expands from an absolute `HOME`. `~user`, unset or
+relative `HOME` for a `~/` path refuse. There is no other environment expansion,
+globbing, fallback search or optional missing mount. Absolute and `~/` forms
+are machine-local configuration: checking them in binds the corpus to that
+layout. Every form MUST resolve canonically to exactly a validated Git or jj
+repository root (that workspace's own root for jj); missing or non-root targets
+refuse. Path spelling and desk placement MUST NOT change handle/native identity
+or diagnostics, independently of physical origin metadata. `scan_root` selects repository-relative
 subtrees, may repeat or take a list, and overrides foreign Markdown scan roots
 when supplied. Selected roots MUST exist and canonicalize inside that mounted
 repository. The owning corpus root and config location are those discovered by
@@ -3503,6 +3510,26 @@ submodules, absolute paths and canonical/symlink escapes never become assets.
 Payloads remain opaque and fragments are unchecked. Missing named file targets
 remain E001. Repeated identical semantic edges keep local occurrence ids;
 unrelated references cannot rename them.
+
+A mount may declare `link_prefix("fm/", "crates/murail-model/fm/")` to
+rescue existing host-authored file references without rewriting documents.
+The host first completes ordinary document, label, version, cascade and opaque
+asset resolution (CR-D114). Only an attempt still unresolved after that, whose
+normalized host-logical target matches an exposed prefix, is retried against
+that mount's native id prefix. Existing resolved edges keep their targets.
+The owning mount applies ordinary document/label/version precedence and its
+opaque-asset fallback. A miss retains the original host target and E001;
+adding a mapping cannot add E001 rows. Imported references never use these
+mappings, and mappings never chain through another mount.
+
+Exposed prefixes are normalized non-empty relative directory prefixes ending
+in `/`, without parent traversal, URI syntax or a declared mount-alias first
+component. Equal or overlapping exposed prefixes anywhere in the host config
+refuse at load. The native prefix is literal within its owning mount, may be
+empty, and cannot be absolute, contain parent traversal, name another declared
+alias or use URI syntax. Existing handle identities never change. Successful
+retries change only the answered edge facts, whose native ids follow CR-R13;
+local exact-semantic occurrence groups preserve duplicate references.
 
 Every imported handle carries `md.mount`, repository and mode metadata.
 `markdown_mount(h, alias, repository, mode)` projects membership.

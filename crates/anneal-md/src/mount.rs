@@ -40,6 +40,30 @@ pub(crate) struct Mount {
     path: Utf8PathBuf,
     revision: Option<String>,
     roots: Vec<Utf8PathBuf>,
+    link_prefixes: Vec<LinkPrefix>,
+}
+
+#[derive(Clone, Debug)]
+struct LinkPrefix {
+    exposed: String,
+    native: String,
+}
+
+fn configured_path(
+    path: &Utf8Path,
+    boundary: &Utf8Path,
+    home: Option<&Utf8Path>,
+) -> Result<Utf8PathBuf> {
+    if let Some(relative) = path.as_str().strip_prefix("~/") {
+        let home = home
+            .filter(|home| home.is_absolute())
+            .context("mount ~/ path requires HOME to be set to an absolute path")?;
+        return Ok(home.join(relative));
+    }
+    if path.as_str().starts_with('~') {
+        anyhow::bail!("mount path supports only a leading ~/; ~user paths are not supported");
+    }
+    Ok(boundary.join(path))
 }
 
 /// Keep a pin's inventory and temporary selected files alive until cross-mount resolution ends.
@@ -51,6 +75,7 @@ pub(crate) struct MountRead {
     snapshot: Option<RepositorySnapshot>,
     repository: RepositoryContext,
     foreign_present: bool,
+    link_prefixes: Vec<LinkPrefix>,
     _temporary: Option<tempfile::TempDir>,
 }
 
@@ -175,6 +200,7 @@ pub(crate) fn from_facts(facts: &ConfigFacts, host: &str) -> Result<Vec<Mount>> 
         let mut path = None;
         let mut revision = None;
         let mut roots = Vec::new();
+        let mut link_prefixes = Vec::new();
         for declaration in block.declarations {
             let values = strings(&declaration)?;
             match declaration.name.as_str() {
@@ -195,6 +221,44 @@ pub(crate) fn from_facts(facts: &ConfigFacts, host: &str) -> Result<Vec<Mount>> 
                     if slot.replace(value).is_some() {
                         anyhow::bail!("duplicate mount {}", declaration.name);
                     }
+                }
+                "link_prefix" => {
+                    let [exposed, native]: [String; 2] = values.try_into().map_err(|_| {
+                        MountConfigError::Declaration(
+                            "link_prefix requires exposed and native string prefixes".into(),
+                        )
+                    })?;
+                    if !exposed.ends_with('/') || exposed.contains(':') {
+                        anyhow::bail!(
+                            "link_prefix exposed prefix must be a relative directory prefix ending in /, not a URI"
+                        );
+                    }
+                    let exposed = anneal_core::normalize_relative_path(&exposed, anneal_core::RelativePathPolicy::STRICT_NON_EMPTY)
+                        .filter(|path| path.as_str() != ".")
+                        .context("link_prefix exposed prefix cannot be absolute, empty or contain parent traversal")?;
+                    if native.contains("://")
+                        || crate::extract::extraction::is_external_uri(&native)
+                    {
+                        anyhow::bail!(
+                            "link_prefix native prefix must belong to its own mount, not a URI or another alias"
+                        );
+                    }
+                    let normalized = anneal_core::normalize_relative_path(
+                        &native,
+                        anneal_core::RelativePathPolicy::ALLOW_EMPTY,
+                    )
+                    .context(
+                        "link_prefix native prefix cannot be absolute or contain parent traversal",
+                    )?;
+                    let native = if native.ends_with('/') && !normalized.as_str().is_empty() {
+                        format!("{normalized}/")
+                    } else {
+                        normalized.to_string()
+                    };
+                    link_prefixes.push(LinkPrefix {
+                        exposed: format!("{exposed}/"),
+                        native,
+                    });
                 }
                 "scan_root" => {
                     if values.is_empty() {
@@ -228,8 +292,8 @@ pub(crate) fn from_facts(facts: &ConfigFacts, host: &str) -> Result<Vec<Mount>> 
         let path = Utf8PathBuf::from(path.ok_or_else(|| {
             MountConfigError::Declaration(format!("mount {name} requires path(...)"))
         })?);
-        if path.is_absolute() {
-            anyhow::bail!("mount path must be relative to the declaring project boundary");
+        if path.as_str().starts_with('~') && !path.as_str().starts_with("~/") {
+            anyhow::bail!("mount path supports only a leading ~/; ~user paths are not supported");
         }
         if let Some(revision) = &revision
             && (!(4..=64).contains(&revision.len())
@@ -244,7 +308,35 @@ pub(crate) fn from_facts(facts: &ConfigFacts, host: &str) -> Result<Vec<Mount>> 
             path,
             revision,
             roots,
+            link_prefixes,
         });
+    }
+    let mut prefixes: Vec<&str> = Vec::new();
+    for mount in &mounts {
+        for prefix in &mount.link_prefixes {
+            if names.contains(
+                prefix
+                    .exposed
+                    .split('/')
+                    .next()
+                    .expect("validated nonempty prefix"),
+            ) {
+                anyhow::bail!("link_prefix exposed prefix collides with a declared mount alias");
+            }
+            if prefix
+                .native
+                .split_once(':')
+                .is_some_and(|(alias, _)| names.contains(alias))
+            {
+                anyhow::bail!("link_prefix native prefix cannot refer to another mount alias");
+            }
+            if prefixes.iter().any(|previous| {
+                previous.starts_with(&prefix.exposed) || prefix.exposed.starts_with(previous)
+            }) {
+                anyhow::bail!("overlapping link_prefix exposed prefixes are not allowed");
+            }
+            prefixes.push(&prefix.exposed);
+        }
     }
     mounts.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(mounts)
@@ -313,8 +405,8 @@ impl Mount {
     ) -> Result<(FactBatch, MountRead)> {
         let boundary = anneal_core::enclosing_project_root(host_root)
             .unwrap_or_else(|| host_root.to_path_buf());
-        let repository_root = boundary
-            .join(&self.path)
+        let home = std::env::var("HOME").ok().map(Utf8PathBuf::from);
+        let repository_root = configured_path(&self.path, &boundary, home.as_deref())?
             .canonicalize_utf8()
             .context("cannot resolve mount repository path")?;
         let repository = RepositoryContext::discover(&repository_root);
@@ -507,6 +599,7 @@ impl Mount {
             snapshot,
             repository,
             foreign_present,
+            link_prefixes: self.link_prefixes.clone(),
             _temporary: temporary,
         };
         Ok((batch, read))
@@ -729,11 +822,19 @@ impl MountRead {
     }
 
     pub(crate) fn resolve_assets(&self, batch: &mut FactBatch) -> Result<()> {
+        let count = batch.edges.len();
+        self.resolve_assets_for_edges(batch, 0..count)
+    }
+
+    fn resolve_assets_for_edges(
+        &self,
+        batch: &mut FactBatch,
+        indices: impl Iterator<Item = usize> + Clone,
+    ) -> Result<()> {
         let prefix = format!("{}:", self.name);
-        let requested: BTreeSet<_> = batch
-            .edges
-            .iter()
-            .filter_map(|edge| edge.to.as_str().strip_prefix(&prefix))
+        let requested: BTreeSet<_> = indices
+            .clone()
+            .filter_map(|index| batch.edges[index].to.as_str().strip_prefix(&prefix))
             .filter_map(|path| {
                 anneal_core::normalize_relative_path(
                     path,
@@ -774,7 +875,7 @@ impl MountRead {
             .map(|handle| handle.id.as_str().to_string())
             .collect();
         let mut changed = BTreeSet::new();
-        for index in 0..batch.edges.len() {
+        for index in indices {
             let original = batch.edges[index].to.as_str();
             if known.contains(original) {
                 continue;
@@ -894,48 +995,160 @@ impl MountRead {
             };
             let edge = &mut batch.edges[index];
             edge.to = qualified_handle(target);
-            changed.insert((
-                edge.from.as_str().to_string(),
-                edge.kind.clone(),
-                edge.to.as_str().to_string(),
-                edge.line,
-            ));
+            changed.insert(edge_key(edge));
         }
-        let mut occurrences = BTreeMap::new();
-        for edge in &mut batch.edges {
-            let key = (
-                edge.from.as_str().to_string(),
-                edge.kind.clone(),
-                edge.to.as_str().to_string(),
-                edge.line,
-            );
-            if !changed.contains(&key) {
-                continue;
+        rekey_edges(batch, &changed)
+    }
+}
+
+type EdgeKey = (String, String, String, u32);
+
+fn edge_key(edge: &anneal_core::EdgeFact) -> EdgeKey {
+    (
+        edge.from.as_str().to_string(),
+        edge.kind.clone(),
+        edge.to.as_str().to_string(),
+        edge.line,
+    )
+}
+
+fn rekey_edges(batch: &mut FactBatch, changed: &BTreeSet<EdgeKey>) -> Result<()> {
+    let mut occurrences = BTreeMap::new();
+    for edge in &mut batch.edges {
+        let key = edge_key(edge);
+        if !changed.contains(&key) {
+            continue;
+        }
+        let occurrence = occurrences.entry(key).or_insert(0usize);
+        let raw = edge.identity.native_id.as_str();
+        let owner = if raw.starts_with("edge:") {
+            String::new()
+        } else if let Some((owner, _)) = raw.split_once(":edge:") {
+            format!("{owner}:")
+        } else {
+            anyhow::bail!("Markdown mount encountered a non-Markdown edge identity");
+        };
+        edge.identity.native_id = NativeId::from(format!(
+            "{owner}{}",
+            anneal_core::encode_native_id(
+                "edge",
+                &(
+                    edge.from.as_str(),
+                    edge.kind.as_str(),
+                    edge.to.as_str(),
+                    edge.line,
+                    *occurrence
+                )
+            )?
+        ));
+        *occurrence += 1;
+    }
+    Ok(())
+}
+
+/// Retry unresolved host attempts once; neither imported references nor misses are rewritten.
+pub(crate) fn resolve_link_prefixes(
+    host_root: &Utf8Path,
+    host_edge_count: usize,
+    reads: &[MountRead],
+    batch: &mut FactBatch,
+) -> Result<()> {
+    if reads.iter().all(|read| read.link_prefixes.is_empty()) {
+        return Ok(());
+    }
+    let known: BTreeSet<_> = batch
+        .handles
+        .iter()
+        .map(|handle| handle.id.clone())
+        .collect();
+    let mut attempts = Vec::new();
+    let mut asset_attempts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (index, edge) in batch.edges[..host_edge_count].iter_mut().enumerate() {
+        if known.contains(&edge.to) || Utf8Path::new(edge.to.as_str()).is_absolute() {
+            continue;
+        }
+        let direct =
+            anneal_core::normalize_path_inside_root(host_root, &host_root.join(edge.to.as_str()));
+        let relative = crate::extract::resolve::resolve_file_path(
+            edge.to.as_str(),
+            Utf8Path::new(&edge.file),
+            host_root,
+        );
+        let target = direct.iter().chain(relative.iter()).find_map(|logical| {
+            reads.iter().enumerate().find_map(|(read_index, read)| {
+                read.link_prefixes.iter().find_map(|prefix| {
+                    logical
+                        .as_str()
+                        .strip_prefix(&prefix.exposed)
+                        .map(|suffix| {
+                            (
+                                read_index,
+                                format!("{}:{}{suffix}", read.name, prefix.native),
+                            )
+                        })
+                })
+            })
+        });
+        if let Some((read_index, target)) = target {
+            attempts.push((index, edge.to.clone()));
+            edge.to = qualified_handle(target);
+            if !known.contains(&edge.to) {
+                asset_attempts.entry(read_index).or_default().push(index);
             }
-            let occurrence = occurrences.entry(key).or_insert(0usize);
-            let raw = edge.identity.native_id.as_str();
-            let owner = if raw.starts_with("edge:") {
-                String::new()
-            } else if let Some((owner, _)) = raw.split_once(":edge:") {
-                format!("{owner}:")
-            } else {
-                anyhow::bail!("Markdown mount encountered a non-Markdown edge identity");
-            };
-            edge.identity.native_id = NativeId::from(format!(
-                "{owner}{}",
-                anneal_core::encode_native_id(
-                    "edge",
-                    &(
-                        edge.from.as_str(),
-                        edge.kind.as_str(),
-                        edge.to.as_str(),
-                        edge.line,
-                        *occurrence
-                    )
-                )?
-            ));
-            *occurrence += 1;
         }
-        Ok(())
+    }
+    if attempts.is_empty() {
+        return Ok(());
+    }
+    for (read_index, indices) in asset_attempts {
+        reads[read_index].resolve_assets_for_edges(batch, indices.into_iter())?;
+    }
+    let known: BTreeSet<_> = batch
+        .handles
+        .iter()
+        .map(|handle| handle.id.clone())
+        .collect();
+    let mut changed = BTreeSet::new();
+    for (index, original) in attempts {
+        let edge = &mut batch.edges[index];
+        if known.contains(&edge.to) {
+            changed.insert(edge_key(edge));
+        } else {
+            edge.to = original;
+        }
+    }
+    rekey_edges(batch, &changed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn configured_path_forms_are_explicit_and_bounded_by_home() {
+        let boundary = Utf8Path::new("/desk/host");
+        let home = Some(Utf8Path::new("/home/user"));
+        for (value, expected) in [
+            ("../foreign", "/desk/host/../foreign"),
+            ("/repos/foreign", "/repos/foreign"),
+            ("~/code/foreign", "/home/user/code/foreign"),
+            ("$REPO/*", "/desk/host/$REPO/*"),
+        ] {
+            assert_eq!(
+                configured_path(Utf8Path::new(value), boundary, home).unwrap(),
+                Utf8Path::new(expected)
+            );
+        }
+        for value in ["~", "~someone/code"] {
+            assert!(configured_path(Utf8Path::new(value), boundary, home).is_err());
+        }
+        assert!(configured_path(Utf8Path::new("~/code"), boundary, None).is_err());
+        assert!(
+            configured_path(
+                Utf8Path::new("~/code"),
+                boundary,
+                Some(Utf8Path::new("relative/home"))
+            )
+            .is_err()
+        );
     }
 }

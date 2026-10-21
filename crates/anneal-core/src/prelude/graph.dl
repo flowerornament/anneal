@@ -80,7 +80,7 @@ hub(h, degree) :=
 @doc(
   name: "markdown_mount",
   intents: ["Find documents imported from another repository.", "Inspect whether an imported document reads current files or a fixed revision."],
-  doc: "Return each mounted handle with its declared alias, owning repository and read mode (workspace or revision). Workspace reads include local edits; a revision reads the exact recorded Git commit. Handle identity does not contain the pin. Only selected Markdown and its referenced assets/code evidence are imported; foreign rules, runtime policies and nested mounts are not loaded. Inspect md.mount.commit and md.mount.config_ignored metadata for the resolved pin and foreign-config disclosure."
+  doc: "Return each mounted handle with its declared alias, owning repository and read mode (workspace or revision). Workspace reads include local edits; a revision reads the exact recorded Git commit. Handle identity does not contain the pin. Only selected Markdown and its referenced assets/code evidence are imported; foreign rules, runtime policies and nested mounts are not loaded. A mount may declare link_prefix(\"fm/\", \"crates/murail-model/fm/\") to rescue unresolved host references after full local lookup; misses keep their original target and imported references never remap. Relative paths use the host project boundary; absolute paths and leading ~/ from an absolute HOME support differently located desks. Inspect md.mount.commit and md.mount.config_ignored metadata for the resolved pin and foreign-config disclosure."
 ).
 markdown_mount(h, alias, repository, mode) :=
   *meta{handle: h, key: "md.mount", value: alias},

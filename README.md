@@ -505,10 +505,15 @@ source md {
 }
 ```
 
-`path` is relative to the host's enclosing project boundary (its repository or
-recognized project root), independently of the current directory and whether
-`anneal.dl` lives at that boundary or inside `.design`. It must name another
-Git or jj repository root. `scan_root` is relative to that mounted repository;
+A relative `path` is based on the host's enclosing project boundary (its
+repository or recognized project root), independently of the current directory
+and whether `anneal.dl` lives there or inside `.design`. Absolute paths and
+`path("~/code/murail").` are also supported. Leading `~/` expands from an
+absolute `HOME`; `~user`, unset/relative `HOME`, other environment expansion,
+globbing and fallback search are unsupported. Absolute and `~/` forms bind a
+checked-in config to that machine layout; they work across differently located
+desks without changing identities. Every form must resolve to exactly the
+owning Git or jj repository root; a missing or non-root mount refuses loading. `scan_root` is relative to that mounted repository;
 it can be repeated or take a list. Omitting it uses that repository's native Markdown
 scan roots and external roots. Explicit mount roots override that selection.
 The owning corpus root and config location are discovered as in a native run
@@ -547,6 +552,26 @@ links. Existence comes from the selected read mode: a file added after a pin
 stays missing under that pin. Missing named targets remain E001; directories,
 submodules and escapes outside the mount do not become assets. Pinned trees
 never follow symlinks.
+
+To preserve existing links such as `[Atoms](fm/atoms.md)`, add a mapping inside
+the mount:
+
+```dl
+link_prefix("fm/", "crates/murail-model/fm/").
+```
+
+This only rescues host references that remain unresolved after normal host
+document, label, version and opaque-asset lookup. A local `fm/atoms.md` always
+wins. Successful retries use the mount's native IDs and ordinary asset rules;
+misses still report E001 with the original authored target. Imported references
+are never remapped and mappings do not chain. Exposed directory prefixes must
+end in `/`; they cannot be absolute, contain parent traversal or URI syntax,
+collide with a mount alias, or overlap another exposed prefix. The native
+prefix belongs to that mount, may be empty and cannot name another alias.
+
+For a corpus with config in `.design/anneal.dl`, use `scan_root(".").` for its
+host documents. A machine-local `path("~/code/murail").` keeps this same config
+usable in both sibling seat desks and nested cached desks.
 
 Each imported row retains its owning origin; pinned origins include the full
 commit and logical path, never a temporary extraction path. Non-UTF-8 paths cannot form handles and

@@ -9,7 +9,9 @@ All notable changes to `anneal` are documented in this file.
 - Named Markdown mounts combine selected content from independent Git or jj
   repositories. Workspace reads include edits; optional commit pins read exact
   trees. Namespaced links, opaque assets and per-mount provenance/capabilities
-  retain each repository's boundary.
+  retain each repository's boundary. Explicit link-prefix mappings rescue legacy
+  host file references after local resolution; absolute and home-relative mount
+  paths support differently located desks.
 
 ### Fixed
 

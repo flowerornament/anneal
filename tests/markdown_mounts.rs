@@ -887,3 +887,176 @@ fn pinned_code_targets_use_repository_then_native_corpus_coordinates() {
             .contains("anneal-mount-")
     );
 }
+
+#[test]
+fn link_prefix_rescues_only_unresolved_host_references() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    let foreign = temp.path().join("foreign");
+    init(&host);
+    init(&foreign);
+    fs::create_dir_all(host.join(".design/fm")).unwrap();
+    fs::create_dir(host.join(".design/nested")).unwrap();
+    fs::create_dir(foreign.join("pages")).unwrap();
+    fs::write(host.join(".design/main.md"), "# Host\n[atoms](fm/atoms.md) [again](fm/./atoms.md)\n[local](fm/local.md)\n[opaque](fm/excluded.md)\n[csv](fm/asset.csv)\n[missing](fm/missing.md)\n[data](fm/data.csv)\n[unselected](fm/opaque.md)\n[escape](../../fm/atoms.md)\n[later](fm/later.csv)\n").unwrap();
+    fs::write(
+        host.join(".design/nested/main.md"),
+        "# Nested\n[relative](../fm/atoms.md)\n",
+    )
+    .unwrap();
+    fs::write(host.join(".design/fm/local.md"), "# Host local wins\n").unwrap();
+    fs::write(host.join(".design/fm/excluded.md"), "# Opaque host wins\n").unwrap();
+    fs::write(host.join(".design/fm/asset.csv"), "host\n").unwrap();
+    fs::write(
+        foreign.join("pages/atoms.md"),
+        "# Atoms\n[no chaining](fm/other.md)\n",
+    )
+    .unwrap();
+    for file in ["other.md", "local.md", "excluded.md", "opaque.md"] {
+        fs::write(foreign.join("pages").join(file), "# Foreign payload\n").unwrap();
+    }
+    fs::write(foreign.join("pages/data.csv"), "pinned\n").unwrap();
+    fs::write(
+        foreign.join("anneal.dl"),
+        "source md { scan_exclude(\"pages/opaque.md\"). }\n",
+    )
+    .unwrap();
+    let pin = commit(&foreign);
+    fs::write(foreign.join("pages/later.csv"), "after pin\n").unwrap();
+    for revision in [None, Some(pin.as_str())] {
+        fs::write(host.join(".design/anneal.dl"), format!("source md {{ scan_root(\".\"). scan_exclude(\"fm/excluded.md\"). mount \"other\" {{ path(\"../foreign\"). scan_root(\"pages\"). {} link_prefix(\"fm/\", \"pages/\"). }} }}\n", revision.map_or_else(String::new, |r| format!("revision(\"{r}\").")))).unwrap();
+        let root = host.join(".design");
+        let rows = query(&root, "? *edge{from: src, to: target, native_id: id}.");
+        let has = |src: &str, target: &str| {
+            rows.iter()
+                .any(|r| r["src"] == src && r["target"] == target)
+        };
+        assert!(has("main.md", "fm/local.md"));
+        assert!(has("main.md", "external:asset:fm/excluded.md"));
+        assert!(has("main.md", "external:asset:fm/asset.csv"));
+        assert!(!has("main.md", "other:pages/local.md"));
+        assert!(!has("main.md", "other:pages/excluded.md"));
+        assert!(has("main.md", "other:external:asset:pages/data.csv"));
+        assert!(has("main.md", "other:external:asset:pages/opaque.md"));
+        assert!(has("nested/main.md", "other:pages/atoms.md"));
+        assert!(has("other:pages/atoms.md", "other:fm/other.md"));
+        let repeated = rows
+            .iter()
+            .filter(|r| r["src"] == "main.md" && r["target"] == "other:pages/atoms.md")
+            .collect::<Vec<_>>();
+        assert_eq!(repeated.len(), 2);
+        assert_ne!(repeated[0]["id"], repeated[1]["id"]);
+        let missing = query(
+            &root,
+            "? diagnostic(\"E001\", severity, subject, file, line, evidence).",
+        );
+        let text = serde_json::to_string(&missing).unwrap();
+        assert!(text.contains("fm/missing.md"));
+        assert!(!text.contains("other:pages/missing.md"));
+        assert!(text.contains("../../fm/atoms.md"));
+        assert!(text.contains("other:fm/other.md"));
+        assert_eq!(missing.len(), if revision.is_some() { 4 } else { 3 });
+        assert_eq!(has("main.md", "fm/later.csv"), revision.is_some());
+    }
+}
+
+#[test]
+fn link_prefix_overlap_and_invalid_forms_refuse_before_repository_reads() {
+    let temp = tempfile::tempdir().unwrap();
+    let host = temp.path().join("host");
+    init(&host);
+    fs::create_dir(host.join(".design")).unwrap();
+    fs::write(host.join(".design/main.md"), "# Host\n").unwrap();
+    for declarations in [
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm/\", \"pages/\"). } mount \"two\" { path(\"../absent\"). link_prefix(\"fm/nested/\", \"pages/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"./fm/\", \"pages/\"). link_prefix(\"fm/\", \"other/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"../fm/\", \"pages/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"https://fm/\", \"pages/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm\", \"pages/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"one/\", \"pages/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm/\", \"../pages/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm/\", \"https://x/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm/\", \"mailto:docs/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm/\", \"urn:foo/\"). }",
+        "mount \"one\" { path(\"../absent\"). link_prefix(\"fm/\", \"two:pages/\"). } mount \"two\" { path(\"../absent\"). }",
+    ] {
+        fs::write(
+            host.join("anneal.dl"),
+            format!("source md {{ scan_root(\".design\"). {declarations} }}\n"),
+        )
+        .unwrap();
+        let out = run(
+            &host,
+            &["--root", host.to_str().unwrap(), "-e", "? *handle{id: id}."],
+        );
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{declarations}");
+        assert!(error.contains("link_prefix"), "{error}");
+        assert!(
+            !error.contains("cannot resolve mount repository path"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn mount_path_forms_preserve_ids_and_diagnostics_across_desk_locations() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().canonicalize().unwrap();
+    let foreign = home.join("code/foreign");
+    init(&foreign);
+    fs::create_dir(foreign.join("pages")).unwrap();
+    fs::write(foreign.join("pages/atoms.md"), "# Atoms\n").unwrap();
+    commit(&foreign);
+    let mut artifacts = Vec::new();
+    for (location, path) in [
+        ("code/host", "../foreign".to_string()),
+        ("code/host", foreign.to_str().unwrap().to_string()),
+        ("code/host", "~/code/foreign".to_string()),
+        (".cache/desks/girard/host", "~/code/foreign".to_string()),
+    ] {
+        let host = home.join(location);
+        init(&host);
+        fs::create_dir_all(host.join(".design")).unwrap();
+        fs::write(
+            host.join(".design/main.md"),
+            "# Host\n[atoms](fm/atoms.md)\n[missing](fm/missing.md)\n",
+        )
+        .unwrap();
+        fs::write(host.join(".design/anneal.dl"), format!("source md {{ scan_root(\".\"). mount \"other\" {{ path(\"{path}\"). scan_root(\"pages\"). link_prefix(\"fm/\", \"pages/\"). }} }}\n")).unwrap();
+        let mut relations = Vec::new();
+        for query in [
+            "? *handle{id: id, native_id: native_id, file: file, kind: kind}.",
+            "? diagnostic(code, severity, subject, file, line, evidence).",
+        ] {
+            let output = Command::new(env!("CARGO_BIN_EXE_anneal"))
+                .env("HOME", &home)
+                .args([
+                    "--root",
+                    host.join(".design").to_str().unwrap(),
+                    "-e",
+                    query,
+                    "--format=ndjson",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let mut rows = String::from_utf8(output.stdout)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .collect::<Vec<_>>();
+            assert!(!rows.is_empty());
+            rows.sort_by_key(Value::to_string);
+            relations.push(serde_json::json!({"row_count": rows.len(), "rows": rows}));
+        }
+        artifacts.push(relations);
+    }
+    for artifact in &artifacts[1..] {
+        assert_eq!(&artifacts[0], artifact);
+    }
+}

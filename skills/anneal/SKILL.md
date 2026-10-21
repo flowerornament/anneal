@@ -347,8 +347,12 @@ source md {
 }
 ```
 
-`path` is relative to the host project boundary; `scan_root` is relative to the
-mounted repository and only narrows selection. The owning corpus root/config
+Relative `path` uses the host project boundary; absolute paths and leading
+`~/` from an absolute HOME are also supported. `path("~/code/murail")` works
+across sibling and nested cached desks, but binds checked-in config to that
+machine layout. No ~user/env/glob expansion or fallback search; a missing or
+non-root mount refuses loading. `scan_root` is relative to the mounted
+repository and only narrows selection. The owning corpus root/config
 are discovered as in its native run (including `.design/anneal.dl`); handles
 retain native corpus-relative or CR-D70 sibling keys under the alias. Section
 placeholders stay unqualified and keep their native meaning. Default mode
@@ -361,6 +365,15 @@ opaque `murail:external:asset:<path>` handles; a file absent from the selected
 pin remains E001 even if it exists in the live workspace. Escapes are refused
 or unresolved, never imported. Aliases are lowercase and cannot be reserved
 handle/URI prefixes or the host corpus prefix.
+
+For legacy host links such as `fm/atoms.md`, add
+`link_prefix("fm/", "crates/murail-model/fm/").` inside the mount. It retries
+only references left unresolved by full host lookup, including local opaque
+assets. Existing host targets win; mapped misses keep their original E001.
+Imported references never use the mapping, and mappings never chain. Exposed
+prefixes are normalized relative directory prefixes ending in `/`; overlaps,
+URI/traversal forms and mount-alias collisions refuse at config load. Handle
+identities stay native under the alias.
 
 Inspect `markdown_mount` and `mount_repository_operation_capability` with
 `describe`. Each mounted handle has five explicit repository capabilities;

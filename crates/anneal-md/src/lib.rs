@@ -266,6 +266,7 @@ impl MarkdownSource {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
         }
+        let host_edge_count = combined.edges.len();
         let mut mount_reads = Vec::new();
         let mut known_handles = if mounts.is_empty() {
             std::collections::BTreeSet::new()
@@ -298,6 +299,10 @@ impl MarkdownSource {
         }
         for read in &mount_reads {
             read.resolve_assets(&mut combined)
+                .map_err(|err| SourceError::Other(format!("{err:#}")))?;
+        }
+        if let Some(root) = cx.roots.first() {
+            mount::resolve_link_prefixes(root, host_edge_count, &mount_reads, &mut combined)
                 .map_err(|err| SourceError::Other(format!("{err:#}")))?;
         }
         for read in &mut mount_reads {
