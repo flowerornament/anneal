@@ -8,6 +8,42 @@ fn shipped_help_and_describe_examples_are_executable() {
     let root = Utf8PathBuf::from_path_buf(dir.path().join("corpus")).expect("utf8 tempdir");
     fs::create_dir(&root).expect("create corpus root");
     fs::write(root.join("a.md"), "# A\n").expect("write corpus document");
+    fs::create_dir(root.join(".design")).expect("create selected host root");
+    fs::write(root.join(".design/b.md"), "# B\n").expect("selected host document");
+    // The shipped mount example names a real sibling repository and scan root.
+    let foreign = dir.path().join("murail");
+    fs::create_dir_all(foreign.join("crates/murail-model/fm")).expect("foreign scan root");
+    fs::write(foreign.join("crates/murail-model/fm/atoms.md"), "# Atoms\n")
+        .expect("foreign document");
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        let output = std::process::Command::new("git")
+            .current_dir(&foreign)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_COMMON_DIR")
+            .args(args)
+            .output()
+            .expect("fixture Git");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let session = RuntimeSession::load_for_test(&root).expect("session loads");
 
     let mut failures = validate_static_help(&session);

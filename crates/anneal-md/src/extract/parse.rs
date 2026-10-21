@@ -9,7 +9,7 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use walkdir::WalkDir;
 
 use crate::extract::body_scan::{
-    CodePathRef, HeadingSpan, LabelCandidate, ScanResult, scan_file_cmark,
+    CodePathRef, HeadingSpan, LabelCandidate, ScanResult, scan_file_cmark_with_mounts,
 };
 use crate::extract::config::{AnnealConfig, Direction, FrontmatterConfig};
 use crate::extract::extraction::{
@@ -454,6 +454,7 @@ struct MarkdownWalk<'a> {
     handle_prefix: &'a Utf8Path,
     scan_roots: Option<&'a [Utf8PathBuf]>,
     containment_root: Option<&'a Utf8Path>,
+    native_corpus_root: Option<&'a Utf8Path>,
 }
 
 /// Parsed markdown file content retained for fact emission.
@@ -530,6 +531,7 @@ fn parse_markdown_file(
     relative: Utf8PathBuf,
     frontmatter_config: &FrontmatterConfig,
     code_path_roots: &[String],
+    mount_names: &[String],
 ) -> Result<ParsedMarkdownFileScan> {
     let content = std::fs::read_to_string(utf8_path)
         .with_context(|| format!("failed to read {utf8_path}"))?;
@@ -571,7 +573,8 @@ fn parse_markdown_file(
 
     // Use pulldown-cmark scanner for production body scanning
     let line_index = LineIndex::from_content(body, frontmatter_line_count);
-    let (scan_result, body_refs) = scan_file_cmark(body, &relative, &line_index, code_path_roots);
+    let (scan_result, body_refs) =
+        scan_file_cmark_with_mounts(body, &relative, &line_index, code_path_roots, mount_names);
 
     let body = body.to_string();
 
@@ -676,6 +679,7 @@ impl GraphBuilder<'_> {
             logical_path,
             &self.config.frontmatter,
             &self.config.code_path_root.root,
+            &self.config.mount_names,
         )?;
         if let Some(snippet) = file_snippet {
             self.files
@@ -709,9 +713,13 @@ impl GraphBuilder<'_> {
         let mut hint_cache: HashMap<&str, RefHint> = HashMap::new();
         for field_edge in &field_edges {
             for target in &field_edge.targets {
-                hint_cache
-                    .entry(target.as_str())
-                    .or_insert_with(|| classify_frontmatter_value(target));
+                hint_cache.entry(target.as_str()).or_insert_with(|| {
+                    if crate::mount::is_reference(target, &self.config.mount_names) {
+                        RefHint::FilePath
+                    } else {
+                        classify_frontmatter_value(target)
+                    }
+                });
             }
         }
 
@@ -970,13 +978,24 @@ pub(crate) fn build_graph_with_external_roots(
     scan_roots: &[Utf8PathBuf],
     external_roots: &[ExternalScanRoot],
 ) -> Result<BuildResult> {
+    build_graph_with_bounds(root, config, scan_roots, external_roots, false)
+}
+
+pub(crate) fn build_graph_with_bounds(
+    root: &Utf8Path,
+    config: &AnnealConfig,
+    scan_roots: &[Utf8PathBuf],
+    external_roots: &[ExternalScanRoot],
+    bounded: bool,
+) -> Result<BuildResult> {
     let (dir_exclusions, file_glob_set) = build_exclude_sets(&config.exclude);
     let mut candidates = collect_markdown_files(
         MarkdownWalk {
             physical_root: root,
             handle_prefix: Utf8Path::new(""),
             scan_roots: Some(scan_roots),
-            containment_root: None,
+            containment_root: bounded.then_some(root),
+            native_corpus_root: None,
         },
         &dir_exclusions,
         file_glob_set.as_ref(),
@@ -988,6 +1007,7 @@ pub(crate) fn build_graph_with_external_roots(
                 handle_prefix: &external_root.handle_prefix,
                 scan_roots: None,
                 containment_root: Some(&external_root.containment_root),
+                native_corpus_root: None,
             },
             &dir_exclusions,
             file_glob_set.as_ref(),
@@ -1001,6 +1021,70 @@ pub(crate) fn build_graph_with_external_roots(
     Ok(builder.finish())
 }
 
+/// Select in repository coordinates while retaining native corpus/CR-D70 keys.
+pub(crate) fn build_graph_for_mount(
+    corpus_root: &Utf8Path,
+    repository_root: &Utf8Path,
+    config: &AnnealConfig,
+    selection: &[Utf8PathBuf],
+) -> Result<BuildResult> {
+    let (directories, globs) = build_exclude_sets(&config.exclude);
+    let candidates = collect_markdown_files(
+        MarkdownWalk {
+            physical_root: repository_root,
+            handle_prefix: Utf8Path::new(""),
+            scan_roots: Some(selection),
+            containment_root: Some(repository_root),
+            native_corpus_root: Some(corpus_root),
+        },
+        &directories,
+        globs.as_ref(),
+    )?;
+    let mut builder = GraphBuilder::new(corpus_root, config);
+    for candidate in candidates {
+        builder.add_file(candidate)?;
+    }
+    Ok(builder.finish())
+}
+
+fn excluded_directory(name: &str, exclusions: &[&str]) -> bool {
+    DEFAULT_EXCLUSIONS.contains(&name)
+        || (name.starts_with('.') && name != ".design")
+        || exclusions.contains(&name)
+}
+
+/// Apply the same filesystem-walk selection to an immutable tree inventory.
+pub(crate) fn snapshot_markdown_paths<'a>(
+    paths: impl Iterator<Item = &'a String>,
+    config: &AnnealConfig,
+    scan_roots: &[Utf8PathBuf],
+    corpus_prefix: &Utf8Path,
+) -> Vec<String> {
+    let (directories, globs) = build_exclude_sets(&config.exclude);
+    paths
+        .filter(|path| {
+            let path = Utf8Path::new(path);
+            path.extension() == Some("md")
+                && is_inside_scan_roots(path, scan_roots)
+                && !path
+                    .ancestors()
+                    .filter(|ancestor| !ancestor.as_str().is_empty())
+                    .any(|ancestor| {
+                        (ancestor != path
+                            && ancestor
+                                .file_name()
+                                .is_some_and(|name| excluded_directory(name, &directories)))
+                            || globs.as_ref().is_some_and(|globs| {
+                                globs.is_match(
+                                    ancestor.strip_prefix(corpus_prefix).unwrap_or(ancestor),
+                                )
+                            })
+                    })
+        })
+        .cloned()
+        .collect()
+}
+
 fn collect_markdown_files(
     scan: MarkdownWalk<'_>,
     dir_exclusions: &[&str],
@@ -1012,16 +1096,30 @@ fn collect_markdown_files(
             let Some(name) = entry.file_name().to_str() else {
                 return false;
             };
-            if entry.file_type().is_dir()
-                && (DEFAULT_EXCLUSIONS.contains(&name)
-                    || (name.starts_with('.') && name != ".design")
-                    || dir_exclusions.contains(&name))
+            if entry.file_type().is_dir() && excluded_directory(name, dir_exclusions) {
+                return false;
+            }
+            // Repository selection is a window, not a reason to traverse unrelated trees.
+            if scan.native_corpus_root.is_some()
+                && entry.file_type().is_dir()
+                && let Some(roots) = scan.scan_roots
+                && let Ok(relative) = entry.path().strip_prefix(scan.physical_root)
+                && let Some(relative) = Utf8Path::from_path(relative)
+                && !is_inside_scan_roots(relative, roots)
+                && !roots.iter().any(|root| root.starts_with(relative))
             {
                 return false;
             }
             if let Some(globs) = file_glob_set
                 && let Ok(relative) = entry.path().strip_prefix(scan.physical_root.as_std_path())
-                && globs.is_match(scan.handle_prefix.as_std_path().join(relative))
+                && globs.is_match(
+                    scan.native_corpus_root
+                        .and_then(|root| entry.path().strip_prefix(root).ok())
+                        .map_or_else(
+                            || scan.handle_prefix.as_std_path().join(relative),
+                            std::path::Path::to_path_buf,
+                        ),
+                )
             {
                 return false;
             }
@@ -1048,10 +1146,13 @@ fn collect_markdown_files(
                 scan.physical_root
             )
         })?;
-        let logical = scan.handle_prefix.join(local);
+        let logical = scan
+            .native_corpus_root
+            .and_then(|root| path.strip_prefix(root).ok())
+            .map_or_else(|| scan.handle_prefix.join(local), Utf8Path::to_path_buf);
         if scan
             .scan_roots
-            .is_some_and(|roots| !is_inside_scan_roots(&logical, roots))
+            .is_some_and(|roots| !is_inside_scan_roots(local, roots))
         {
             continue;
         }
@@ -1139,6 +1240,7 @@ mod tests {
             Utf8PathBuf::from("source.md"),
             &config.frontmatter,
             &config.code_path_root.root,
+            &[],
         )
         .expect("parse file");
         let result = build_graph(root, &config).expect("build graph");

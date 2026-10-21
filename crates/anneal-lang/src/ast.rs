@@ -216,6 +216,8 @@ impl ConfigBlock {
 pub struct SourceBlock {
     pub source: Ident,
     pub declarations: Vec<Declaration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mounts: Vec<SourceMount>,
     #[serde(default, skip_serializing)]
     pub location: SourceLocation,
 }
@@ -225,9 +227,17 @@ impl SourceBlock {
         Self {
             source,
             declarations,
+            mounts: Vec::new(),
             location,
         }
     }
+}
+
+/// A named corpus mounted by a source adapter. Interpretation belongs to that adapter.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceMount {
+    pub name: String,
+    pub declarations: Vec<Declaration>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -334,6 +334,7 @@ fn split_project_program(
     let mut discovery = Vec::new();
     let mut runtime_config = Vec::new();
     let mut statements = Vec::new();
+    let mut mount_ordinal = 0;
 
     for statement in program.statements {
         match statement {
@@ -341,7 +342,7 @@ fn split_project_program(
                 runtime_config.extend(config_block_entries(&block)?);
             }
             Statement::SourceBlock(block) => {
-                discovery.extend(resolver.entries_for_source_block(&block)?);
+                discovery.extend(resolver.entries_for_source_block(&block, &mut mount_ordinal)?);
             }
             Statement::Fact(head) => match resolver.entries_for_required_fact(&head)? {
                 Some(entries) => discovery.extend(entries),
@@ -463,6 +464,7 @@ impl DiscoveryResolver {
     fn entries_for_source_block(
         &self,
         block: &crate::runtime::ast::SourceBlock,
+        mount_ordinal: &mut u32,
     ) -> Result<Vec<ConfigEntry>, ProjectLoadError> {
         let mut entries = Vec::new();
         for declaration in &block.declarations {
@@ -474,6 +476,25 @@ impl DiscoveryResolver {
                 });
             };
             entries.extend(declaration_entries(schema, declaration)?);
+        }
+        for mount in &block.mounts {
+            let key = format!("{}.mount", block.source);
+            if self.schema(&key).is_none() {
+                return Err(ProjectLoadError::UnknownDiscoveryKey {
+                    key,
+                    location: block.location.clone(),
+                });
+            }
+            let ordinal = *mount_ordinal;
+            *mount_ordinal = mount_ordinal
+                .checked_add(1)
+                .ok_or_else(|| ProjectLoadError::OrderedConfigIndexOverflow { key: key.clone() })?;
+            entries.push(ConfigEntry::ordered(
+                key,
+                serde_json::to_string(mount)
+                    .expect("source mount contains only serializable AST values"),
+                ordinal,
+            ));
         }
         Ok(entries)
     }

@@ -81,7 +81,7 @@ pub use ranking::{
     DefaultRanker, REASON_PARENT_CLUSTER, Ranker, RankingContext, SearchHit, SearchScore,
     default_lexical_search_info,
 };
-pub use repository::{RepositoryContext, RepositoryOperation};
+pub use repository::{RepositoryContext, RepositoryOperation, RepositorySnapshot};
 pub use retrieval::{
     ContentProvider, ReadChunk, ReadContext, ReadError, ReadFullContent, ReadFullRequest,
     ReadRequest, RetrievalContext, SearchContext, SearchError, SearchProvider, SearchRequest,

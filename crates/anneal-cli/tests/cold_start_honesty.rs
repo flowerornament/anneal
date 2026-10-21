@@ -2212,7 +2212,7 @@ project_diagnostic("P991", "warning", h, file, 1, ("custom", value)) := *meta{ha
 "#,
     );
     let rows = json_rows(&run_in(dir.path(), &["intents", "--json"]));
-    assert_eq!(rows.len(), 257);
+    assert_eq!(rows.len(), 261);
     let cards = rows
         .iter()
         .map(|row| {
@@ -2222,7 +2222,10 @@ project_diagnostic("P991", "warning", h, file, 1, ("custom", value)) := *meta{ha
             )
         })
         .collect::<BTreeSet<_>>();
-    assert_eq!(cards.len(), 82);
+    assert_eq!(cards.len(), 84);
+    for name in ["markdown_mount", "mount_repository_operation_capability"] {
+        assert_eq!(rows.iter().filter(|row| row["name"] == name).count(), 2);
+    }
     assert!(rows.iter().all(|row| {
         row.as_object()
             .expect("row")
@@ -2265,14 +2268,14 @@ project_diagnostic("P991", "warning", h, file, 1, ("custom", value)) := *meta{ha
             .lines()
             .filter(|line| line.starts_with("- "))
             .count(),
-        257
+        261
     );
     assert_eq!(
         rendered
             .lines()
             .filter(|line| !line.starts_with("- "))
             .count(),
-        82
+        84
     );
     assert_eq!(rendered.matches("P991 [runtime topic]").count(), 1);
     assert!(!rendered.contains("score="));

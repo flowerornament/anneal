@@ -76,3 +76,34 @@ hub(h, degree) :=
   *handle{id: h},
   degree = Count{ other : incident(h, other) },
   degree >= 10.
+
+@doc(
+  name: "markdown_mount",
+  intents: ["Find documents imported from another repository.", "Inspect whether an imported document reads current files or a fixed revision."],
+  doc: "Return each mounted handle with its declared alias, owning repository and read mode (workspace or revision). Workspace reads include local edits; a revision reads the exact recorded Git commit. Handle identity does not contain the pin. Only selected Markdown and its referenced assets/code evidence are imported; foreign rules, runtime policies and nested mounts are not loaded. Inspect md.mount.commit and md.mount.config_ignored metadata for the resolved pin and foreign-config disclosure."
+).
+markdown_mount(h, alias, repository, mode) :=
+  *meta{handle: h, key: "md.mount", value: alias},
+  *meta{handle: h, key: "md.mount.repository", value: repository},
+  *meta{handle: h, key: "md.mount.mode", value: mode}.
+
+@doc(
+  name: "mount_repository_operation_capability",
+  intents: ["Check history availability for an imported document.", "Explain why a mounted document has no working-tree recency."],
+  doc: "Return the capability and reason for an operation on a mounted handle. Operations are change_history, assertion_blame, target_history, ignore_index and version_tags. They belong to the mounted repository, independently of repository_operation_capability for the host. All five are unavailable for pinned mounts; pinned content still has exact commit provenance. Workspace drift-cache reuse is disabled because the mount can change independently of the host."
+).
+mount_repository_operation_capability(h, "change_history", available, reason) :=
+  *meta{handle: h, key: "md.mount.change_history.available", value: available},
+  *meta{handle: h, key: "md.mount.change_history.reason", value: reason}.
+mount_repository_operation_capability(h, "assertion_blame", available, reason) :=
+  *meta{handle: h, key: "md.mount.assertion_blame.available", value: available},
+  *meta{handle: h, key: "md.mount.assertion_blame.reason", value: reason}.
+mount_repository_operation_capability(h, "target_history", available, reason) :=
+  *meta{handle: h, key: "md.mount.target_history.available", value: available},
+  *meta{handle: h, key: "md.mount.target_history.reason", value: reason}.
+mount_repository_operation_capability(h, "ignore_index", available, reason) :=
+  *meta{handle: h, key: "md.mount.ignore_index.available", value: available},
+  *meta{handle: h, key: "md.mount.ignore_index.reason", value: reason}.
+mount_repository_operation_capability(h, "version_tags", available, reason) :=
+  *meta{handle: h, key: "md.mount.version_tags.available", value: available},
+  *meta{handle: h, key: "md.mount.version_tags.reason", value: reason}.

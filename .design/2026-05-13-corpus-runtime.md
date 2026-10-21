@@ -3417,6 +3417,8 @@ boundary, so a corpus at `.design` mounting `../formal` emits
 `formal/models/prism.md`. External roots never change primary handles,
 must share one Git-backed project boundary, and fail on overlap or logical-handle
 collision. `scan_exclude` globs match the resulting logical handles.
+Named cross-repository mounts are a separate facility under CR-D115; they do
+not widen this boundary or rewrite these handles.
 Rationale: discovery configuration changes the extraction window, not
 the identity of already-known corpus objects; the stable project prefix
 prevents cross-root collisions without re-keying the primary corpus.
@@ -3440,7 +3442,88 @@ is unchanged: an absent extensionless symbolic target such as `NOTICE` remains
 an ambiguous external reference without E001, while a present regular file
 at that path becomes an asset. Directories, absolute paths and canonical or
 symlink escapes outside the corpus or configured mounts never become assets.
-Mount containment and source isolation remain those of CR-D70 and CR-D111.
+Mount containment and source isolation remain those of CR-D70 and CR-D111;
+CR-D115 applies the same existence seam to named repository mounts.
+
+**Definition CR-D115 (Named Markdown repository mounts).** A `source md`
+block may contain `mount "alias" { path("../repository"). scan_root("docs"). }`.
+`path` is relative to the declaring host's enclosing project boundary, not to
+the process directory or the location of `anneal.dl`. It MUST resolve to a
+validated Git or jj repository root. `scan_root` selects repository-relative
+subtrees, may repeat or take a list, and overrides foreign Markdown scan roots
+when supplied. Selected roots MUST exist and canonicalize inside that mounted
+repository. The owning corpus root and config location are those discovered by
+a native run at that repository root (for example `.design/anneal.dl`). Without
+explicit roots, its native Markdown scan roots and CR-D70 external roots apply.
+Mounts are explicit opt-ins and do not alter CR-D70 identities or boundaries.
+
+The default reads current workspace files, including local edits. Optional
+`revision("<Git commit id>")` resolves once to a full commit and reads its
+immutable regular-file tree. Only full or unambiguous hexadecimal Git commit
+ids are accepted; absent, ambiguous, symbolic and jj change ids refuse. No
+fetch, checkout mutation or jj snapshot occurs. Symlinks and submodules are not
+materialized from a pin. The inventory is read once; only selected Markdown,
+its configuration and demanded asset/code blobs are read and materialized.
+Unrelated repository payloads are not read. Paths that cannot be represented
+as UTF-8 handles are skipped in the inventory, with their repository-wide
+count disclosed as `md.mount.skipped_non_utf8_paths` on imported handles.
+
+A mounted handle is `<alias>:` plus the identity assigned by its owning
+repository natively. Corpus-internal files retain corpus-relative keys; sibling
+files retain CR-D70 project-relative keys. `scan_root` is a repository-relative
+selection window: it narrows extraction and MUST NOT re-key facts. Reference
+resolution inside a mount uses those native identities. Labels, spans and owned
+native identities are also scoped. Section placeholders (`section:...`) stay
+unqualified: they are non-identity reference conventions, not owned handles,
+and retain their native exemption from missing-reference diagnostics. An alias starts with a lowercase ASCII letter and otherwise uses
+lowercase letters, digits, `_` or `-`. Duplicate aliases, handle kinds,
+reserved handle/URI prefixes, label-style prefixes and the host corpus prefix
+refuse before extraction. Existing host identities and ordinary URI handling
+remain unchanged until an alias is declared. A declared alias owns the opaque
+`alias:path` form; undeclared schemes and every `scheme://` link (including
+`alias://`) retain URI semantics. The short reserved list includes file, http,
+https, mailto, ssh, ftp, ftps, sftp, news, tel, git, javascript, urn, data and qmd;
+its comparison is case-insensitive. The full resolved commit belongs to origin provenance and
+`md.mount.commit`, never to a handle id: adding, removing or changing a pin MUST
+NOT re-key the same logical fact (CR-R13). Physical placement likewise does not
+enter handle or native identity.
+
+An authored `<alias>:<path>` in a Markdown link or edge-bearing frontmatter
+field addresses the combined graph. Relative imported references resolve in
+the owning mount; explicit aliases can cross mounts. Resolution precedence is
+extracted documents, labels and versions, then opaque assets (CR-D114), then
+an unresolved attempt. The asset window is the entire mounted repository,
+including unselected or excluded Markdown and data files. Asset identity is
+`<alias>:external:asset:<native logical path>`; native identity and file
+name the scoped logical asset path, revision is its byte hash, origin is its
+resolved file (or repository plus full commit plus path), and area derives
+from its logical path. The pin's regular-blob inventory answers existence at
+a pin; current disk never supplies a missing pinned asset. Directories,
+submodules, absolute paths and canonical/symlink escapes never become assets.
+Payloads remain opaque and fragments are unchecked. Missing named file targets
+remain E001. Repeated identical semantic edges keep local occurrence ids;
+unrelated references cannot rename them.
+
+Every imported handle carries `md.mount`, repository and mode metadata.
+`markdown_mount(h, alias, repository, mode)` projects membership.
+`mount_repository_operation_capability(h, operation, available, reason)`
+reports change history, assertion blame, target history, ignore-index and
+version tags per handle. These operations are earned only through the owning
+repository's validated RepositoryContext (CR-D111); the host's capability never
+answers for a mount. All five are explicitly unavailable at a pin, with exact
+commit provenance retained. Workspace recency covers emitted files only, and
+jj reads retain CR-D113's recorded-pin and no-snapshot semantics. A moving
+mount pin refuses its generation. Mount target probes never reuse or persist
+the host's drift cache; detailed referent-drift cache evidence is unavailable.
+
+Only foreign `source md` declarations `scan_root`, `external_root`, `scan_exclude`,
+`file_extension`, `linear_namespace`, `label_pattern`, `version_pattern`,
+`section_min_depth` and `section_max_depth` are honored, with the same supported
+values as local Markdown discovery. Foreign rules, runtime policies, prelude
+extensions and nested mounts are ignored, with `md.mount.config_ignored`
+disclosure when a foreign `anneal.dl` exists. A foreign config file cannot
+escape its repository by symlink. Host rules and policies govern the combined
+graph; mounting does not execute or recursively load a foreign program.
 
 **Definition CR-D110 (Markdown scan population disclosure).** Markdown
 discovery is defined by the configured filesystem mounts from CR-D70, not by
@@ -3472,6 +3555,7 @@ therefore carries both policies at once. This is the walks/tracks/mounts
 distinction made explicit, not one source-neutral membership rule.
 
 **Definition CR-D111 (Project boundary, backing, and history capability).**
+Named mounts apply this boundary independently per owning repository (CR-D115).
 Filesystem provenance has three coordinates that MUST NOT be collapsed:
 
 1. The **project boundary** bounds mounted paths and supplies stable,
@@ -4274,6 +4358,7 @@ config key.
 - CR-D111: Project boundary, backing, and history capability (§42)
 - CR-D113: History semantics in a jj workspace (§42)
 - CR-D114: Opaque file assets (§42)
+- CR-D115: Named Markdown repository mounts (§42)
 - CR-D112: Lifecycle-derived orientation policy (§11)
 
 ### CR-R (Rules)

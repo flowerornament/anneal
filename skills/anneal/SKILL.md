@@ -334,6 +334,42 @@ project-relative handles such as `formal/models/prism.md`, so references
 resolve across directories; mounts that escape the boundary, overlap, or
 collide on a handle fail loudly.
 
+For another repository, use a named mount inside `source md`:
+
+```dl
+source md {
+  scan_root(".design").
+  mount "murail" {
+    path("../murail").
+    scan_root("crates/murail-model/fm").
+    # revision("489ffa98").
+  }
+}
+```
+
+`path` is relative to the host project boundary; `scan_root` is relative to the
+mounted repository and only narrows selection. The owning corpus root/config
+are discovered as in its native run (including `.design/anneal.dl`); handles
+retain native corpus-relative or CR-D70 sibling keys under the alias. Section
+placeholders stay unqualified and keep their native meaning. Default mode
+reads current files, including edits.
+Optional `revision` accepts a full or unambiguous Git commit id, resolves it
+once, and reads that tree without checkout mutation or fetching. Imported
+handles and links use `murail:path/to/file.md`, independent of the pin; local
+imported links stay in their own mount. Existing but unselected files become
+opaque `murail:external:asset:<path>` handles; a file absent from the selected
+pin remains E001 even if it exists in the live workspace. Escapes are refused
+or unresolved, never imported. Aliases are lowercase and cannot be reserved
+handle/URI prefixes or the host corpus prefix.
+
+Inspect `markdown_mount` and `mount_repository_operation_capability` with
+`describe`. Each mounted handle has five explicit repository capabilities;
+pinned mounts report these unavailable with a reason, and retain full commit
+provenance. Workspace mounts never use the host drift cache. Only foreign
+Markdown discovery settings are honored; foreign rules, policies, prelude
+extensions and nested mounts are ignored and disclosed in
+`md.mount.config_ignored`. The host governs the combined graph.
+
 When a query becomes a reusable corpus move, promote it into a project `@verb`
 with docs, schema, args, and capabilities. Verbs then appear in `schema` and
 are callable by name. Run `anneal describe <verb>` for a loaded verb's teaching

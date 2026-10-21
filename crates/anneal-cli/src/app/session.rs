@@ -23,7 +23,7 @@ use anneal_core::{
 use anneal_md::{EdgeAssertionRefreshProgressSink, MarkdownSource};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::Utf8PathBuf;
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{SecondsFormat, Utc};
 
 use crate::{ContextCommand, DescribeCommand, ReadCommand, SearchCommand};
 
@@ -355,7 +355,19 @@ impl RuntimeSession {
                 ));
             }
             MarkdownSource::discard_unavailable_history(&mut markdown_batch, &repository);
-            jj_mtimes.clear();
+            let mounted_handles: BTreeSet<_> = markdown_batch
+                .meta
+                .iter()
+                .filter(|meta| meta.key == "md.mount")
+                .map(|meta| &meta.handle)
+                .collect();
+            let mounted_files: BTreeSet<_> = markdown_batch
+                .handles
+                .iter()
+                .filter(|handle| mounted_handles.contains(&handle.id))
+                .map(|handle| handle.file.as_str())
+                .collect();
+            jj_mtimes.retain(|file, _| mounted_files.contains(file.as_str()));
         }
         let mut store = FactStore::default();
         store
@@ -370,15 +382,18 @@ impl RuntimeSession {
                 .replace_configs(&corpus, configs)
                 .context("failed to merge runtime config facts")?;
         }
-        let git_mtimes = if repository.is_jj_workspace() {
-            jj_mtimes
+        let mut git_mtimes = if repository.is_jj_workspace() {
+            BTreeMap::new()
         } else {
-            git_mtimes_for_files(
+            anneal_md::git_file_times(
                 root,
                 &mut repository,
                 store.handles().iter().map(|handle| handle.file.as_str()),
             )
         };
+        // Extraction-local times include independently owned repository mounts.
+        // Host history must never be used to answer for their namespaced paths.
+        git_mtimes.extend(jj_mtimes);
         let history = read_snapshot_history(root).context("failed to read snapshot history")?;
         replace_snapshot_history(&mut store, &history);
         Ok(Self {
@@ -1005,53 +1020,6 @@ fn runtime_config_facts(
     corpus: &CorpusId,
 ) -> Vec<anneal_core::ConfigFact> {
     project.map_or_else(Vec::new, |project| project.runtime_config_facts(corpus))
-}
-
-fn git_mtimes_for_files<'a>(
-    root: &camino::Utf8Path,
-    repository: &mut RepositoryContext,
-    files: impl IntoIterator<Item = &'a str>,
-) -> BTreeMap<String, String> {
-    if repository
-        .direct_git_root(RepositoryOperation::ChangeHistory)
-        .is_none()
-    {
-        return BTreeMap::new();
-    }
-
-    let files = files
-        .into_iter()
-        .filter(|file| !file.is_empty())
-        .collect::<BTreeSet<_>>();
-    if files.is_empty() {
-        return BTreeMap::new();
-    }
-
-    let Ok(Some(history)) = repository.direct_file_history(root) else {
-        return BTreeMap::new();
-    };
-
-    let mut mtimes = BTreeMap::new();
-    let mut current_instant = None::<String>;
-    for line in history.lines().map(str::trim) {
-        if line.is_empty() {
-            continue;
-        }
-        if DateTime::parse_from_rfc3339(line).is_ok() {
-            current_instant = Some(line.to_string());
-            continue;
-        }
-        if files.contains(line)
-            && !mtimes.contains_key(line)
-            && let Some(instant) = &current_instant
-        {
-            mtimes.insert(line.to_string(), instant.clone());
-            if mtimes.len() == files.len() {
-                break;
-            }
-        }
-    }
-    mtimes
 }
 
 fn default_markdown_config() -> Vec<ConfigEntry> {

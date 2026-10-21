@@ -14,6 +14,7 @@ use camino::Utf8PathBuf;
 use serde::Serialize;
 
 mod extract;
+mod mount;
 
 const SOURCE_NAME: &str = "markdown";
 
@@ -133,11 +134,12 @@ impl Source for MarkdownSource {
         SourceInfo {
             name: SOURCE_NAME,
             recognizes: vec![Pattern::new("**/*.md")],
-            doc: "Extracts markdown files from corpus-relative scan roots into stored relation facts; md.external_root additively mounts bounded project siblings.",
+            doc: "Extracts Markdown from corpus-relative scan roots. md.external_root additively mounts bounded same-project siblings; named mount blocks add independent repositories with path, scan_root and optional Git commit revision. Describe markdown_mount for namespaced links and mount_repository_operation_capability for per-handle history boundaries.",
             config_keys: vec![
                 ConfigKey::required_exact("md.file_extension", 1),
                 ConfigKey::required_exact("md.scan_root", 1),
                 ConfigKey::optional_at_least("md.external_root", 1),
+                ConfigKey::optional_exact("md.mount", 1),
                 ConfigKey::optional_at_least("md.scan_exclude", 1),
                 ConfigKey::optional_exact("md.label_pattern", 3),
                 ConfigKey::optional_exact("md.linear_namespace", 1),
@@ -181,6 +183,9 @@ impl MarkdownSource {
 
         let generation = cx.next_generation();
         let mut discovery = MarkdownDiscoveryConfig::from_facts(cx.config_facts)?;
+        let mounts = mount::from_facts(cx.config_facts, cx.corpus.as_str())
+            .map_err(|err| SourceError::Other(err.to_string()))?;
+        discovery.options.mount_names = mount::names(&mounts);
         discovery.options.probe_code_target_history = cx.probe_code_target_history;
         discovery.options.probe_edge_assertions = cx.probe_edge_assertions;
         discovery.options.read_code_drift_evidence = cx.read_code_drift_evidence;
@@ -261,6 +266,49 @@ impl MarkdownSource {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear();
         }
+        let mut mount_reads = Vec::new();
+        let mut known_handles = if mounts.is_empty() {
+            std::collections::BTreeSet::new()
+        } else {
+            combined
+                .handles
+                .iter()
+                .map(|handle| handle.id.clone())
+                .collect()
+        };
+        for mount in &mounts {
+            cx.cancellation.check()?;
+            let root = cx
+                .roots
+                .first()
+                .ok_or_else(|| SourceError::Other("Markdown mounts require a host root".into()))?;
+            let (batch, read) = mount
+                .extract(root, cx, &discovery.options.mount_names)
+                .map_err(|err| SourceError::Other(format!("{err:#}")))?;
+            for handle in &batch.handles {
+                if !known_handles.insert(handle.id.clone()) {
+                    return Err(SourceError::Other(format!(
+                        "Markdown mount handle collision: {}",
+                        handle.id.as_str()
+                    )));
+                }
+            }
+            combined.append(batch);
+            mount_reads.push(read);
+        }
+        for read in &mount_reads {
+            read.resolve_assets(&mut combined)
+                .map_err(|err| SourceError::Other(format!("{err:#}")))?;
+        }
+        for read in &mut mount_reads {
+            history_times
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(read.times(&combined));
+            read.annotate(&mut combined);
+            read.finish()
+                .map_err(|err| SourceError::Other(format!("{err:#}")))?;
+        }
         let times = std::mem::take(
             &mut *history_times
                 .lock()
@@ -298,6 +346,8 @@ impl MarkdownDiscoveryConfig {
             options: extract::adapter::MarkdownExtractionOptions {
                 scan_roots,
                 external_roots,
+                mount_names: Vec::new(),
+                mounted_selection: None,
                 exclude: facts
                     .values("md.scan_exclude")
                     .map(str::to_string)
@@ -357,6 +407,54 @@ fn valid_external_root(value: &str) -> Result<Utf8PathBuf, SourceError> {
         )));
     }
     Ok(path)
+}
+
+/// Git change times for emitted logical files only. A failed history probe yields no earned times.
+pub fn git_file_times<'a>(
+    root: &camino::Utf8Path,
+    repository: &mut RepositoryContext,
+    files: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, String> {
+    if repository
+        .direct_git_root(anneal_core::RepositoryOperation::ChangeHistory)
+        .is_none()
+    {
+        return BTreeMap::new();
+    }
+
+    let files = files
+        .into_iter()
+        .filter(|file| !file.is_empty())
+        .collect::<std::collections::BTreeSet<_>>();
+    if files.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let Ok(Some(history)) = repository.direct_file_history(root) else {
+        return BTreeMap::new();
+    };
+
+    let mut mtimes = BTreeMap::new();
+    let mut current_instant = None::<String>;
+    for line in history.lines().map(str::trim) {
+        if line.is_empty() {
+            continue;
+        }
+        if chrono::DateTime::parse_from_rfc3339(line).is_ok() {
+            current_instant = Some(line.to_string());
+            continue;
+        }
+        if files.contains(line)
+            && !mtimes.contains_key(line)
+            && let Some(instant) = &current_instant
+        {
+            mtimes.insert(line.to_string(), instant.clone());
+            if mtimes.len() == files.len() {
+                break;
+            }
+        }
+    }
+    mtimes
 }
 
 #[cfg(test)]

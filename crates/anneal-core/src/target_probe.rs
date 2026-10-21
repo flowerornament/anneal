@@ -635,6 +635,20 @@ impl CodeTargetProbeCache {
         probe_code_target_without_history(corpus_root, target_path)
     }
 
+    /// Probe an immutable read tree with an explicitly validated project boundary.
+    /// This preserves project-first, corpus-second lookup without manufacturing Git markers.
+    pub fn probe_without_history_in_project(
+        &mut self,
+        corpus_root: &Utf8Path,
+        target_path: &str,
+        project_root: &Utf8Path,
+    ) -> CodeTargetProbe {
+        if !corpus_root.starts_with(project_root) {
+            return CodeTargetProbe::unknown();
+        }
+        probe_code_target_without_history_at(corpus_root, target_path, Some(project_root))
+    }
+
     fn history_contains_target(
         &mut self,
         base: &Utf8Path,
@@ -1337,22 +1351,31 @@ fn probe_code_target_with_cache(
 }
 
 fn probe_code_target_without_history(corpus_root: &Utf8Path, target_path: &str) -> CodeTargetProbe {
+    let project_root = enclosing_project_root(corpus_root);
+    probe_code_target_without_history_at(corpus_root, target_path, project_root.as_deref())
+}
+
+fn probe_code_target_without_history_at(
+    corpus_root: &Utf8Path,
+    target_path: &str,
+    project_root: Option<&Utf8Path>,
+) -> CodeTargetProbe {
     let Some(normalized) =
         normalize_relative_path(target_path, RelativePathPolicy::STRICT_NON_EMPTY)
     else {
         return CodeTargetProbe::unknown();
     };
 
-    if let Some(project_root) = enclosing_project_root(corpus_root) {
-        if let Some(found) = existing_target(&project_root, &normalized) {
-            return existing_target_probe(project_root, found);
+    if let Some(project_root) = project_root {
+        if let Some(found) = existing_target(project_root, &normalized) {
+            return existing_target_probe(project_root.to_path_buf(), found);
         }
         if project_root != corpus_root
             && let Some(found) = existing_target(corpus_root, &normalized)
         {
             return existing_target_probe(corpus_root.to_path_buf(), found);
         }
-        return unknown_missing_target_probe(project_root, &normalized);
+        return unknown_missing_target_probe(project_root.to_path_buf(), &normalized);
     }
 
     if let Some(found) = existing_target(corpus_root, &normalized) {

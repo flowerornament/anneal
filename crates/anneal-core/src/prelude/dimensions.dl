@@ -142,6 +142,8 @@ axis_of("entropy", "convergence").
 axis_of("entropy_priority", "convergence").
 axis_of("file_parent_dir", "structure").
 axis_of("file_prefix", "structure").
+axis_of("markdown_mount", "structure").
+axis_of("mount_repository_operation_capability", "structure").
 axis_of("flow", "convergence").
 axis_of("forward_dependency_to_next_status", "structure").
 axis_of("frontier", "convergence").

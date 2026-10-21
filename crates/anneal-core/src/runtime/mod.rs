@@ -44,9 +44,10 @@ pub use analysis::{
 };
 pub use ast::{
     Aggregate, AggregateFunction, Atom, Body, CallArg, CallStyle, Comparison, ComparisonOp,
-    DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident, ImportDirective, IncludeDirective,
-    Literal, NegatedAtom, Negation, NumberLiteral, PredicateDecl, PredicateRef, Program, Query,
-    Rule, SourceLocation, Statement, StoredAtom, Term, TimeBlock, VerbDecl,
+    Declaration, DerivedAtom, DocDecl, Expr, FieldPattern, Head, Ident, ImportDirective,
+    IncludeDirective, Literal, NegatedAtom, Negation, NumberLiteral, PredicateDecl, PredicateRef,
+    Program, Query, Rule, SourceLocation, SourceMount, Statement, StoredAtom, Term, TimeBlock,
+    VerbDecl,
 };
 pub use eval::{
     Database, EvalError, EvalOptions, ExplainDepth, ExplainOptions, ExplainRowLimit,

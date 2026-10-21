@@ -4,6 +4,13 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- Named Markdown mounts combine selected content from independent Git or jj
+  repositories. Workspace reads include edits; optional commit pins read exact
+  trees. Namespaced links, opaque assets and per-mount provenance/capabilities
+  retain each repository's boundary.
+
 ### Fixed
 
 - Markdown references answered by sibling-file resolution or a successful

@@ -393,11 +393,22 @@ impl<'a> BodyScanner<'a> {
 ///
 /// Returns the resolver projection and typed extraction projection derived from
 /// one canonical body-reference stream.
+#[cfg(test)]
 pub(crate) fn scan_file_cmark(
     body: &str,
     file_path: &Utf8Path,
     line_index: &LineIndex,
     code_path_roots: &[String],
+) -> (ScanResult, Vec<DiscoveredRef>) {
+    scan_file_cmark_with_mounts(body, file_path, line_index, code_path_roots, &[])
+}
+
+pub(crate) fn scan_file_cmark_with_mounts(
+    body: &str,
+    file_path: &Utf8Path,
+    line_index: &LineIndex,
+    code_path_roots: &[String],
+    mount_names: &[String],
 ) -> (ScanResult, Vec<DiscoveredRef>) {
     let mut scanner = BodyScanner::new(BodyScanContext {
         file_path,
@@ -494,6 +505,12 @@ pub(crate) fn scan_file_cmark(
                 let dest = dest_url.as_ref();
                 let offset = range.start;
                 let line = line_index.offset_to_line(offset);
+
+                if crate::mount::is_reference(dest, mount_names) {
+                    let target = dest.split('#').next().unwrap_or(dest);
+                    scanner.record(target, RefHint::FilePath, &EdgeKind::Cites, line, false);
+                    continue;
+                }
 
                 match link_type {
                     LinkType::WikiLink { .. } => {

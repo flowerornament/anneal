@@ -47,6 +47,8 @@ version = "0.28.0"
 dependencies = [
  "anneal-cli",
  "dhat",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -202,12 +202,20 @@ impl Parser {
     fn parse_source_block(&mut self, location: SourceLocation) -> Result<Statement, ParseError> {
         self.expect_keyword("source")?;
         let source = self.expect_ident()?;
-        let declarations = self.parse_declaration_block()?;
-        Ok(Statement::SourceBlock(SourceBlock::new(
-            source,
-            declarations,
-            location,
-        )))
+        self.expect(&TokenKind::LBrace)?;
+        let mut block = SourceBlock::new(source, Vec::new(), location);
+        while !self.eat(&TokenKind::RBrace) {
+            if self.eat_keyword("mount") {
+                let name = self.expect_string()?;
+                let declarations = self.parse_declaration_block()?;
+                block
+                    .mounts
+                    .push(crate::ast::SourceMount { name, declarations });
+            } else {
+                block.declarations.push(self.parse_declaration()?);
+            }
+        }
+        Ok(Statement::SourceBlock(block))
     }
 
     fn parse_declaration_block(&mut self) -> Result<Vec<Declaration>, ParseError> {

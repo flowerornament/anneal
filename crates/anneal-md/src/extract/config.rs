@@ -180,6 +180,9 @@ pub(crate) struct ImpactConfig {
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct AnnealConfig {
+    /// Declared cross-repository aliases, supplied by discovery rather than foreign config.
+    #[serde(skip)]
+    pub(crate) mount_names: Vec<String>,
     /// Root directory to scan (defaults to nearest `.design/`, `docs/`, or `anneal.dl` upward).
     pub(crate) root: String,
     /// Additional directories to exclude beyond defaults.

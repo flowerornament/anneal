@@ -37,6 +37,8 @@ pub(crate) type PendingHistory = Arc<Mutex<Vec<(RepositoryContext, CodeDriftEvid
 
 #[derive(Clone, Debug, Default)]
 pub struct MarkdownExtractionOptions {
+    pub(crate) mount_names: Vec<String>,
+    pub(crate) mounted_selection: Option<(Utf8PathBuf, Vec<Utf8PathBuf>)>,
     pub scan_roots: Vec<Utf8PathBuf>,
     pub external_roots: Vec<Utf8PathBuf>,
     pub exclude: Vec<String>,
@@ -54,7 +56,7 @@ pub struct MarkdownExtractionOptions {
 
 #[derive(Clone, Debug)]
 pub struct MarkdownConfig {
-    config: config::AnnealConfig,
+    pub(crate) config: config::AnnealConfig,
 }
 
 impl MarkdownConfig {
@@ -201,6 +203,7 @@ fn extract_markdown_facts_from_anneal_config(
     config: &mut config::AnnealConfig,
     options: &MarkdownExtractionOptions,
 ) -> Result<FactBatch> {
+    config.mount_names.clone_from(&options.mount_names);
     config.exclude.extend(options.exclude.iter().cloned());
     config
         .handles
@@ -211,9 +214,20 @@ fn extract_markdown_facts_from_anneal_config(
     } else {
         options.scan_roots.clone()
     };
-    let external_roots = resolve_external_scan_roots(root, &options.external_roots)?;
-    let mut result =
-        parse::build_graph_with_external_roots(root, config, &scan_roots, &external_roots)?;
+    let external_roots = if let Some((repository_root, _)) = &options.mounted_selection {
+        vec![parse::ExternalScanRoot {
+            physical_root: repository_root.clone(),
+            handle_prefix: Utf8PathBuf::new(),
+            containment_root: repository_root.clone(),
+        }]
+    } else {
+        resolve_external_scan_roots(root, &options.external_roots)?
+    };
+    let mut result = if let Some((repository_root, selection)) = &options.mounted_selection {
+        parse::build_graph_for_mount(root, repository_root, config, selection)?
+    } else {
+        parse::build_graph_with_external_roots(root, config, &scan_roots, &external_roots)?
+    };
     let mut pre_cascade_index = crate::extract::resolve::resolve_nodes(
         &mut result.graph,
         &result.resolution.label_candidates,
@@ -1273,6 +1287,14 @@ fn resolve_external_scan_roots(
     corpus_root: &Utf8Path,
     configured_roots: &[Utf8PathBuf],
 ) -> Result<Vec<parse::ExternalScanRoot>> {
+    resolve_external_scan_roots_in_project(corpus_root, configured_roots, None)
+}
+
+pub(crate) fn resolve_external_scan_roots_in_project(
+    corpus_root: &Utf8Path,
+    configured_roots: &[Utf8PathBuf],
+    validated_project_root: Option<&Utf8Path>,
+) -> Result<Vec<parse::ExternalScanRoot>> {
     if configured_roots.is_empty() {
         return Ok(Vec::new());
     }
@@ -1287,7 +1309,10 @@ fn resolve_external_scan_roots(
     let corpus_root = corpus_root
         .canonicalize_utf8()
         .with_context(|| format!("failed to resolve markdown corpus root {corpus_root}"))?;
-    let project_root = external_root_project_boundary(&corpus_root)?;
+    let project_root = match validated_project_root {
+        Some(root) => root.to_path_buf(),
+        None => external_root_project_boundary(&corpus_root)?,
+    };
 
     let mut mounts = Vec::<parse::ExternalScanRoot>::new();
     for configured in configured_roots {
@@ -1408,9 +1433,18 @@ fn jj_ignored_scanned_files(
 
 /// Drop evidence from a moved pin, including missing-target confidence that feeds W006.
 pub(crate) fn discard_jj_history(batch: &mut FactBatch, repository: &RepositoryContext) {
+    let mounted: HashSet<_> = batch
+        .meta
+        .iter()
+        .filter(|meta| meta.key == "md.mount")
+        .map(|meta| meta.handle.clone())
+        .collect();
     let target_unavailable = !repository.operation_available(RepositoryOperation::TargetHistory);
     let ignore_unavailable = !repository.operation_available(RepositoryOperation::IgnoreIndex);
     batch.meta.retain(|meta| {
+        if mounted.contains(&meta.handle) {
+            return true;
+        }
         !(target_unavailable && meta.key.starts_with("code.referent_")
             || ignore_unavailable && meta.key == "md.scan_git_disposition")
     });
@@ -1418,6 +1452,9 @@ pub(crate) fn discard_jj_history(batch: &mut FactBatch, repository: &RepositoryC
         return;
     }
     for meta in &mut batch.meta {
+        if mounted.contains(&meta.handle) {
+            continue;
+        }
         if meta.key == CodeTargetMeta::TARGET_HISTORY_STATUS {
             meta.value = "unavailable".to_string();
         }
@@ -2214,6 +2251,8 @@ fn emit_code_ref_meta(
         });
         let probe = if options.probe_code_target_history {
             probe_cache.probe(root, &reference.path, repository)
+        } else if let Some((project_root, _)) = &options.mounted_selection {
+            probe_cache.probe_without_history_in_project(root, &reference.path, project_root)
         } else {
             probe_cache.probe_without_history(root, &reference.path)
         };

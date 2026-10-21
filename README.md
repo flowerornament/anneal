@@ -490,6 +490,84 @@ machine.
 `anneal init --dry-run` previews a scaffolded `anneal.dl`. `anneal init` writes
 only when no repo config exists.
 
+### Cross-repository Markdown mounts
+
+A named mount adds selected Markdown from another local repository to this
+corpus. Put this in the host's `anneal.dl`:
+
+```dl
+source md {
+  scan_root(".design").
+  mount "murail" {
+    path("../murail").
+    scan_root("crates/murail-model/fm").
+  }
+}
+```
+
+`path` is relative to the host's enclosing project boundary (its repository or
+recognized project root), independently of the current directory and whether
+`anneal.dl` lives at that boundary or inside `.design`. It must name another
+Git or jj repository root. `scan_root` is relative to that mounted repository;
+it can be repeated or take a list. Omitting it uses that repository's native Markdown
+scan roots and external roots. Explicit mount roots override that selection.
+The owning corpus root and config location are discovered as in a native run
+at the repository root (for example `.design/anneal.dl`).
+Roots must exist and remain inside their repository after canonicalization.
+
+The default reads current workspace files, including local edits. Add
+`revision("489ffa98").` inside the mount to read an exact Git commit without
+changing either checkout. Full commit ids and unambiguous hexadecimal prefixes
+are accepted; symbolic refs, jj change ids, absent or ambiguous ids refuse.
+The full resolved commit is recorded. Nothing is fetched.
+
+Imported handles are the alias plus their native identity, independently of the
+selection window, physical checkout path and pin. Corpus-internal files keep
+corpus-relative keys; siblings keep their CR-D70 project-relative keys: `murail:crates/murail-model/fm/atoms.md`. Link to that
+handle in Markdown or an edge-bearing frontmatter field:
+
+```md
+[Atom definitions](murail:crates/murail-model/fm/atoms.md)
+```
+
+Section placeholders (`section:...`) keep their native unqualified meaning
+and do not become missing-handle errors. Relative links inside imported documents stay in their own mount; explicit
+aliases can link between mounts. Labels, spans and owned fact identities are
+scoped too. Aliases use lowercase ASCII letters, digits, `_` and `-`, starting
+with a letter. Handle kinds, reserved prefixes, standard URI schemes, the host
+corpus prefix and duplicate aliases are refused. A declared alias owns the opaque `alias:path` form; undeclared schemes and
+every `scheme://` link retain URI semantics. Incoming fragments follow ordinary Markdown link behavior and
+are not validated.
+
+An existing regular file anywhere inside the mounted repository becomes an
+opaque asset if no extracted document, label or version answers the reference.
+This includes unselected or excluded Markdown and data files. Asset handles
+use `murail:external:asset:<path>`. Assets have no extracted payload or outgoing
+links. Existence comes from the selected read mode: a file added after a pin
+stays missing under that pin. Missing named targets remain E001; directories,
+submodules and escapes outside the mount do not become assets. Pinned trees
+never follow symlinks.
+
+Each imported row retains its owning origin; pinned origins include the full
+commit and logical path, never a temporary extraction path. Non-UTF-8 paths cannot form handles and
+are skipped in a pin, with their count in `md.mount.skipped_non_utf8_paths`. Use
+`anneal describe markdown_mount` and
+`anneal describe mount_repository_operation_capability` to inspect membership,
+mode and the five per-handle repository operations. Those capabilities come
+from the mounted repository, never the host. Pinned mounts report all five
+history/working-tree operations unavailable, while retaining exact commit
+provenance. Workspace mounts do not reuse the host drift cache; detailed
+referent-drift cache evidence is unavailable for them.
+
+Only foreign `source md` settings `scan_root`, `external_root`, `scan_exclude`, `file_extension`,
+`linear_namespace`, `label_pattern`, `version_pattern`, `section_min_depth` and
+`section_max_depth` are read, with the same supported-value restrictions as
+local Markdown discovery. Foreign rules, runtime policies, prelude extensions
+and nested mounts are ignored; `md.mount.config_ignored` records that boundary
+when a foreign `anneal.dl` exists. The host's rules and policies govern the
+combined graph. `external_root` retains its existing same-project semantics.
+
+
 ### Example `anneal.dl`
 
 ```dl

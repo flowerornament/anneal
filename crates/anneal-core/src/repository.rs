@@ -4,6 +4,8 @@ use std::process::Command;
 use std::sync::Arc;
 
 mod jj;
+mod snapshot;
+pub use snapshot::RepositorySnapshot;
 
 use camino::{Utf8Path, Utf8PathBuf};
 
