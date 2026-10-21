@@ -4,6 +4,8 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.29.0 - 2026-10-21
+
 ### Added
 
 - Named Markdown mounts combine selected content from independent Git or jj
