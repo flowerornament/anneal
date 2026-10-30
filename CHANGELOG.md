@@ -4,6 +4,14 @@ All notable changes to `anneal` are documented in this file.
 
 ## Unreleased
 
+## v0.29.1 - 2026-10-29
+
+### Security
+
+- Markdown parsing uses pulldown-cmark 0.13.5, which fixes RUSTSEC-2026-0414:
+  empty-display wikilinks such as `[[a|]]` no longer cause exponential parser
+  event growth on untrusted corpora.
+
 ## v0.29.0 - 2026-10-21
 
 ### Added
