@@ -34,16 +34,17 @@ declaration signatures and top-level blocks without adding a second Rust parser.
 Co-mention and import edges are therefore navigational evidence, not compiler
 truth; rendered output labels them accordingly.
 
-This implementation is a close port of Murail's proven atlas. Anneal removes
-only Murail's formal-model binding enrichment and supplies its own comment
-citation vocabulary. Once both consumers have established the stable seams, the
-shared scanner and views should move to a standalone library rather than evolve
-as two implementations.
+Atlas source capture, lexical grammar, navigation and shape measurements come
+from the pinned public `atlas-core` library. The xtask keeps Anneal's command
+syntax, native JSON/text presentation and comment citation vocabulary. Runtime
+crates do not depend on Atlas. Relationships exclude comments and strings;
+unions are recognized alongside structs and enums.
 
 File modules inherit test boundaries through declared descendants, including
 explicit path mounts. Shared production mounts and Cargo target roots remain
 production; a directory named `tests` alone is no evidence. Historical scans
-retain current workspace membership and read immutable member blobs in one
-batch through the validated local Git checkout. Source bytes, including terminal
-CR/LF, are preserved. Historical reads from jj-only desks require the colocated
-checkout.
+retain current workspace membership and read an immutable revision tree through the shared Git boundary. Source bytes, including terminal
+CR/LF, are preserved. Historical reads from jj-only desks resolve their own backing Git store;
+they never use an ancestor repository. Physical shape reports prefer a
+production context when a file has both test and production package mounts;
+navigation retains each package context.

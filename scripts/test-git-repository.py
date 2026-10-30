@@ -102,7 +102,6 @@ class CensusTests(unittest.TestCase):
             root = Path(directory)
             helpers = {
                 "crates/anneal-core/src/repository.rs": 'fn git_command() { Command::new("git"); }',
-                "xtask/src/atlas.rs": 'fn git() { Command::new("git"); }',
                 "scripts/git_repository.py": 'def run():\n return ["git", "status"]',
                 "scripts/git-repository.sh": 'git_at_root() {\n git status\n}',
             }
@@ -111,7 +110,7 @@ class CensusTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text)
             with patch.object(census, "ROOT", root), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                self.assertEqual(census.main(), 0, "positive four-builder instrument")
+                self.assertEqual(census.main(), 0, "positive three-builder instrument")
                 for name, source in {
                     "crates/bad.rs": 'fn bad() { Command::new("git"); }',
                     "scripts/bad.py": 'subprocess.run(["git", "status"])',
@@ -122,10 +121,10 @@ class CensusTests(unittest.TestCase):
                     self.assertNotEqual(census.main(), 0, f"{name} must turn the real gate red")
                     path.unlink()
 
-    def test_real_census_has_exactly_four_builders(self) -> None:
+    def test_real_census_has_exactly_three_builders(self) -> None:
         allowed, refused = census.census(ROOT)
         self.assertEqual(refused, [])
-        self.assertEqual(len(allowed), 4)
+        self.assertEqual(len(allowed), 3)
 
     def test_rust_test_attribute_does_not_hide_later_production(self) -> None:
         source = '''struct S { #[cfg(test)] field: usize }

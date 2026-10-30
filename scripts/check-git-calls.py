@@ -17,7 +17,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUST_BUILDERS = {
     ("crates/anneal-core/src/repository.rs", "git_command"),
-    ("xtask/src/atlas.rs", "git"),
 }
 # Mask comments and strings without moving source offsets; brace scopes survive.
 RUST_LITERALS = re.compile(
@@ -120,8 +119,8 @@ def main() -> int:
         print(f"Git boundary: {site}")
     for site in refused:
         print(f"unvalidated Git launch: {site}", file=sys.stderr)
-    if len(allowed) != 4:
-        print(f"expected four Git builders (two Rust, Python, shell), found {len(allowed)}", file=sys.stderr)
+    if len(allowed) != 3:
+        print(f"expected three Git builders (Rust, Python, shell), found {len(allowed)}", file=sys.stderr)
         return 1
     return int(bool(refused))
 

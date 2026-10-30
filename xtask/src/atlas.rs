@@ -1,35 +1,17 @@
-//! The atlas — a derived whole-system name and module map.
-//!
-//! Seven read-only verbs fold over the shared item scanner (`crate::scan`),
-//! which owns the one line grammar and the one test boundary. `census` walks
-//! the aggregation ladder
-//! (workspace → crate → directory → module); `name` renders one name's card
-//! (locations, doc summary, re-export façades, co-mention edges); `module`
-//! renders one module's card (header, per-item census,
-//! use-edge fan-in/out, orphans, `--graph` edges); `dump` emits the complete
-//! item and relationship index;
-//! `comments --audit` mechanically checks the standing comment policy.
-//! Relationships are declaration-level co-mention edges: the captured blocks
-//! scanned for the captured type
-//! names — the type graph without a parser, approximate by design. The atlas
-//! owns no facts and never writes: every run recomputes from the tree, so
-//! stale means re-run. Output is dense, deterministic (rows sorted by path,
-//! then name), greppable, and budgeted to roughly a screenful per ladder rung;
-//! `--json` emits the same data for machines.
-
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-
-use cargo_metadata::MetadataCommand;
+//! Anneal's command syntax and native presentation over pinned Atlas source reports.
+//! The shared core owns discovery, lexical facts, navigation and shape calculations.
+mod input;
+mod reports;
+use atlas_core::{
+    model::{Evidence, Resolution},
+    population::VisibilitySelection,
+    queries::navigation::{self as nav, Navigation, Site, Tally},
+    source::{ItemKind, Visibility},
+};
 use serde::Serialize;
 use serde_json::json;
-
-use crate::scan::{self, Item, ItemKind, Visibility};
-
+use std::collections::{BTreeMap, BTreeSet};
 type Result<T> = std::result::Result<T, String>;
-type GitResult = Result<Vec<u8>>;
-
 const USAGE: &str = "\
 usage: cargo xtask atlas <verb> [--json] [--pub-only]
   atlas census [CRATE|PATH]      aggregation ladder: workspace -> crate -> directory -> module
@@ -81,36 +63,32 @@ pub(crate) fn run(args: impl Iterator<Item = String>) -> Result<()> {
         pub_only: flags.pub_only,
         include_private: verb == "dump" && !flags.pub_only,
     };
-    let workspace = Workspace::load()?;
+    let snapshot = input::capture()?;
+    for diagnostic in input::diagnostic_lines(&snapshot) {
+        eprintln!("{diagnostic}");
+    }
     let output = match (verb.as_str(), argument.as_deref()) {
-        ("census", key) => {
-            let graph = build_graph(&workspace, filter);
-            census(&workspace, key, &graph, filter, flags.json)?
+        ("comments", None) => reports::comments(&snapshot, filter, flags.json)?,
+        ("concentration", key) => reports::concentration(&snapshot, key, flags.json)?,
+        ("diff", Some(reference)) => reports::diff(&snapshot, reference, flags.json)?,
+        _ => {
+            let navigation =
+                Navigation::new(&snapshot, filter.selection()).map_err(|e| e.to_string())?;
+            match (verb.as_str(), argument.as_deref()) {
+                ("census", key) => census(&navigation, key, filter, flags.json)?,
+                ("name", Some(query)) => name_card(&navigation, query, filter, flags.json)?,
+                ("module", Some(path)) => module_card(
+                    &navigation,
+                    path,
+                    filter,
+                    flags.items,
+                    flags.graph,
+                    flags.json,
+                )?,
+                ("dump", None) => dump(&navigation, &snapshot, filter)?,
+                _ => return Err("incomplete atlas invocation".to_owned()),
+            }
         }
-        ("name", Some(query)) => {
-            let graph = build_graph(&workspace, filter);
-            name_card(&workspace, query, &graph, filter, flags.json)?
-        }
-        ("module", Some(path)) => {
-            let graph = build_graph(&workspace, filter);
-            module_card(
-                &workspace,
-                path,
-                &graph,
-                filter,
-                flags.items,
-                flags.graph,
-                flags.json,
-            )?
-        }
-        ("dump", None) => {
-            let graph = build_graph(&workspace, filter);
-            dump(&workspace, &graph, filter)?
-        }
-        ("comments", None) => comments_audit(&workspace, filter, flags.json)?,
-        ("concentration", key) => concentration(&workspace, key, flags.json)?,
-        ("diff", Some(reference)) => diff(&workspace, reference, flags.json)?,
-        _ => unreachable!("validate_invocation accepts only complete command shapes"),
     };
     println!("{output}");
     Ok(())
@@ -151,512 +129,6 @@ fn validate_invocation(verb: &str, argument: Option<&str>, flags: AtlasFlags) ->
     }
 }
 
-// ── the scanned workspace ──────────────────────────────────────────────────
-
-/// Every member crate's `src` tree, scanned once per run through the one item
-/// grammar. Crates are sorted by name; files by path — the sort order of every
-/// atlas view.
-struct Workspace {
-    root: PathBuf,
-    crates: Vec<CrateMap>,
-}
-
-struct CrateMap {
-    name: String,
-    /// Workspace-relative `src` directory, e.g. `crates/anneal-core/src`.
-    src_rel: String,
-    /// Current Cargo target roots; historical scans preserve current membership.
-    entry_points: Vec<String>,
-    files: Vec<FileMap>,
-}
-
-/// One Rust file and every scanner-owned view Atlas derives from it.
-struct FileMap {
-    /// Workspace-relative path with `/` separators — the atlas's module key.
-    rel: String,
-    items: Vec<Item>,
-    regions: scan::TestRegions,
-    projection: scan::RustSourceProjection,
-    /// Whether the whole file is test code, because a sibling declares it
-    /// under a test-implying gate (`#[cfg(test)] mod fixtures;`). A file
-    /// cannot know this about itself; `Workspace::load` resolves it.
-    test_file: bool,
-}
-
-impl FileMap {
-    fn load(root: &Path, path: &Path) -> Result<Self> {
-        let text =
-            fs::read_to_string(path).map_err(|err| format!("read {}: {err}", path.display()))?;
-        Ok(Self::of(rel_display(root, path), text))
-    }
-
-    fn of(rel: String, text: String) -> Self {
-        let projection = scan::RustSourceProjection::of(text);
-        let items = projection.items(Path::new(&rel));
-        let regions = projection.test_regions();
-        Self {
-            rel,
-            items,
-            regions,
-            projection,
-            test_file: false,
-        }
-    }
-
-    /// Lines outside every test region — zero for a whole test file.
-    fn nontest_loc(&self) -> usize {
-        if self.test_file {
-            0
-        } else {
-            self.regions.non_test_loc()
-        }
-    }
-
-    /// Items on the production side of the one test boundary
-    /// (`scan::TestRegions`) — the only population the atlas counts.
-    fn production_items(&self) -> impl Iterator<Item = &Item> {
-        self.items
-            .iter()
-            .filter(|item| !self.test_file && !self.regions.covers(item.line))
-    }
-
-    /// Lexically projected lines outside every test-only region.
-    fn production_code_lines(&self) -> impl Iterator<Item = (usize, &str)> {
-        self.projection
-            .code_lines()
-            .enumerate()
-            .filter(|(index, _)| !self.test_file && !self.regions.covers(index + 1))
-            .map(|(index, line)| (index + 1, line))
-    }
-}
-
-impl Workspace {
-    fn load() -> Result<Self> {
-        let metadata = MetadataCommand::new()
-            .no_deps()
-            .exec()
-            .map_err(|err| format!("cargo metadata failed: {err}"))?;
-        let root = metadata.workspace_root.as_std_path().to_path_buf();
-        let mut packages: Vec<_> = metadata.workspace_packages().into_iter().collect();
-        packages.sort_by(|a, b| a.name.cmp(&b.name));
-
-        let mut crates = Vec::new();
-        for package in packages {
-            let src = package
-                .manifest_path
-                .as_std_path()
-                .parent()
-                .ok_or_else(|| format!("manifest without a parent: {}", package.manifest_path))?
-                .join("src");
-            let mut paths = Vec::new();
-            collect_rs_files(&src, &mut paths)?;
-            paths.sort();
-            let mut files = paths
-                .iter()
-                .map(|path| FileMap::load(&root, path))
-                .collect::<Result<Vec<_>>>()?;
-            let entry_points = package
-                .targets
-                .iter()
-                .map(|target| rel_display(&root, target.src_path.as_std_path()))
-                .collect::<Vec<_>>();
-            mark_test_files(&mut files, &entry_points);
-            crates.push(CrateMap {
-                name: package.name.to_string(),
-                src_rel: rel_display(&root, &src),
-                entry_points,
-                files,
-            });
-        }
-        Ok(Self { root, crates })
-    }
-
-    /// The same workspace as it stood at a git ref, scanned through the same
-    /// grammar. Membership comes from the *current* manifest (a crate added
-    /// since the ref has no `before` side, which is exactly how it should
-    /// read), so this reuses cargo's own answer rather than a path pattern.
-    fn at_ref(&self, reference: &str) -> Result<Self> {
-        let git = git(&self.root)?;
-        let revision = String::from_utf8(git(
-            &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
-            None,
-        )?)
-        .map_err(|error| format!("Git revision not UTF-8: {error}"))?;
-        let revision = revision.trim();
-        let listing = String::from_utf8(git(&["ls-tree", "-r", "-z", revision], None)?)
-            .map_err(|error| format!("Git tree not UTF-8: {error}"))?;
-        let objects = listing
-            .split_terminator('\0')
-            .map(|row| {
-                let (header, path) = row.split_once('\t').ok_or("Git tree row has no path")?;
-                let fields: Vec<_> = header.split_whitespace().collect();
-                let [_, kind, oid] = fields.as_slice() else {
-                    return Err("Git tree row has malformed object fields".to_owned());
-                };
-                Ok((path, *kind, *oid))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        // Preserve the current manifest's membership and each source population,
-        // including overlapping roots, while transporting immutable bodies once.
-        let member_sources = self
-            .crates
-            .iter()
-            .map(|crate_map| {
-                let prefix = format!("{}/", crate_map.src_rel);
-                let paths = objects
-                    .iter()
-                    .filter(|(path, _, _)| {
-                        path.starts_with(&prefix) && is_rust_source(Path::new(path))
-                    })
-                    .map(|(path, kind, oid)| {
-                        if *kind != "blob" {
-                            return Err(format!("Git tree refused source {path}: {kind}"));
-                        }
-                        Ok(((*path).to_owned(), (*oid).to_owned()))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok((crate_map, paths))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let requests = member_sources
-            .iter()
-            .flat_map(|(_, paths)| paths.iter().cloned())
-            .collect::<Vec<_>>();
-        let sources = read_blobs(&git, &requests)?;
-        let mut crates = Vec::new();
-        for (crate_map, paths) in member_sources {
-            let mut files = paths
-                .into_iter()
-                .map(|(path, _)| {
-                    let text = sources[&path].clone();
-                    FileMap::of(path, text)
-                })
-                .collect::<Vec<_>>();
-            mark_test_files(&mut files, &crate_map.entry_points);
-            crates.push(CrateMap {
-                name: crate_map.name.clone(),
-                src_rel: crate_map.src_rel.clone(),
-                entry_points: crate_map.entry_points.clone(),
-                files,
-            });
-        }
-        Ok(Self {
-            root: self.root.clone(),
-            crates,
-        })
-    }
-
-    fn crate_named(&self, name: &str) -> Option<&CrateMap> {
-        self.crates.iter().find(|crate_map| crate_map.name == name)
-    }
-
-    fn file(&self, rel: &str) -> Option<(&CrateMap, &FileMap)> {
-        self.crates.iter().find_map(|crate_map| {
-            crate_map
-                .files
-                .iter()
-                .find(|file| file.rel == rel)
-                .map(|file| (crate_map, file))
-        })
-    }
-
-    fn files(&self) -> impl Iterator<Item = &FileMap> {
-        self.crates
-            .iter()
-            .flat_map(|crate_map| crate_map.files.iter())
-    }
-}
-
-/// Where a module file's child modules live, per Rust's own layout rule:
-/// beside a crate or directory root (`lib.rs`, `main.rs`, `mod.rs`), and in
-/// the matching `foo/` directory for any other `foo.rs`.
-fn child_directory(rel: &str) -> String {
-    let (directory, file) = rel.rsplit_once('/').unwrap_or(("", rel));
-    match file {
-        "lib.rs" | "main.rs" | "mod.rs" => directory.to_owned(),
-        _ => format!("{directory}/{}", file.trim_end_matches(".rs")),
-    }
-}
-
-/// Independent of the product being measured; validate once before traversing a ref.
-fn git(root: &Path) -> Result<impl Fn(&[&str], Option<fs::File>) -> GitResult + '_> {
-    let run = move |arguments: &[&str], input: Option<fs::File>| {
-        let mut command = std::process::Command::new("git");
-        command
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env_remove("GIT_COMMON_DIR")
-            .arg("-C")
-            .arg(root)
-            .current_dir(root)
-            .args(arguments);
-        if let Some(input) = input {
-            command.stdin(input);
-        }
-        let output = command
-            .output()
-            .map_err(|err| format!("git {}: {err}", arguments.join(" ")))?;
-        if !output.status.success() {
-            return Err(format!(
-                "git {}: {}",
-                arguments.join(" "),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok(output.stdout)
-    };
-    let reported = run(&["rev-parse", "--show-toplevel"], None).map_err(|error| {
-        format!(
-            "refusing Git at {}; use the colocated checkout (expected .git at {}): {error}",
-            root.display(),
-            root.display()
-        )
-    })?;
-    let reported =
-        String::from_utf8(reported).map_err(|error| format!("Git root not UTF-8: {error}"))?;
-    if std::fs::canonicalize(reported.trim()).ok() != std::fs::canonicalize(root).ok() {
-        return Err(format!(
-            "refusing Git at {}: toplevel is {}; use the colocated checkout (expected .git at {})",
-            root.display(),
-            reported.trim(),
-            root.display()
-        ));
-    }
-    Ok(run)
-}
-
-/// File-backed input avoids deadlock when requests and answers both fill pipes.
-fn read_blobs(
-    git: &impl Fn(&[&str], Option<fs::File>) -> GitResult,
-    requests: &[(String, String)],
-) -> Result<BTreeMap<String, String>> {
-    use std::io::{Seek, Write};
-
-    if requests.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-    let mut input =
-        tempfile::tempfile().map_err(|error| format!("create Git batch request: {error}"))?;
-    for (_, oid) in requests {
-        writeln!(input, "{oid}").map_err(|error| format!("write Git batch request: {error}"))?;
-    }
-    input
-        .rewind()
-        .map_err(|error| format!("rewind Git batch request: {error}"))?;
-    blob_answers(requests, &git(&["cat-file", "--batch"], Some(input))?)
-}
-
-/// Decode size-framed blobs, binding each answer to its requested tree object.
-/// Anneal preserves the complete source text, including terminal CR/LF bytes.
-fn blob_answers(
-    requests: &[(String, String)],
-    mut bytes: &[u8],
-) -> Result<BTreeMap<String, String>> {
-    let mut sources = BTreeMap::new();
-    for (path, expected_oid) in requests {
-        let end = bytes
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .ok_or_else(|| format!("Git batch missing header for {path}"))?;
-        let header = std::str::from_utf8(&bytes[..end])
-            .map_err(|error| format!("Git batch header for {path}: {error}"))?;
-        let fields = header.split_whitespace().collect::<Vec<_>>();
-        let [oid, "blob", size] = fields.as_slice() else {
-            return Err(format!("Git batch refused {path}: {header}"));
-        };
-        if oid != expected_oid {
-            return Err(format!(
-                "Git batch object for {path}: expected {expected_oid}, found {oid}"
-            ));
-        }
-        let size = size
-            .parse::<usize>()
-            .map_err(|error| format!("Git batch size for {path}: {error}"))?;
-        bytes = &bytes[end + 1..];
-        let body = bytes
-            .get(..size)
-            .ok_or_else(|| format!("Git batch truncated blob for {path}"))?;
-        let text = std::str::from_utf8(body)
-            .map_err(|error| format!("Git batch source for {path}: {error}"))?;
-        sources.insert(path.clone(), text.to_owned());
-        bytes = bytes
-            .get(size..)
-            .and_then(|tail| tail.strip_prefix(b"\n"))
-            .ok_or_else(|| format!("Git batch missing blob terminator for {path}"))?;
-    }
-    if !bytes.is_empty() {
-        return Err("Git batch returned unrequested trailing answers".into());
-    }
-    Ok(sources)
-}
-
-fn resolve_module_path(declaring_file: &str, explicit_path: &str) -> String {
-    let directory = Path::new(declaring_file)
-        .parent()
-        .unwrap_or_else(|| Path::new(""));
-    let mut normalized = PathBuf::new();
-    for component in directory.join(explicit_path).components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Normal(part) => normalized.push(part),
-            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized.to_string_lossy().replace('\\', "/")
-}
-
-/// One file can be mounted both implicitly and by an explicit path, with
-/// different directories for its ordinary child declarations.
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct ModuleMount {
-    file: usize,
-    beside_file: bool,
-}
-
-/// Follow test-gated file declarations and their transitive children. A path
-/// mount changes the child's location, never its inherited test boundary.
-/// Production mounts take precedence when a file has both kinds of parent.
-fn mark_test_files(files: &mut [FileMap], entry_points: &[String]) {
-    let by_path: BTreeMap<_, _> = files
-        .iter()
-        .enumerate()
-        .map(|(index, file)| (file.rel.clone(), index))
-        .collect();
-    let mut children = BTreeMap::new();
-    let mut mounted = BTreeSet::new();
-    for (index, file) in files.iter().enumerate() {
-        let declarations = file.projection.file_module_declarations();
-        for beside_file in [false, true] {
-            let mount = ModuleMount {
-                file: index,
-                beside_file,
-            };
-            let directory = if beside_file {
-                file.rel
-                    .rsplit_once('/')
-                    .map_or("", |(directory, _)| directory)
-                    .to_owned()
-            } else {
-                child_directory(&file.rel)
-            };
-            let mut edges = Vec::new();
-            for (name, explicit_path, test_only) in &declarations {
-                let paths = if let Some(path) = explicit_path {
-                    vec![resolve_module_path(&file.rel, path)]
-                } else {
-                    vec![
-                        format!("{directory}/{name}.rs"),
-                        format!("{directory}/{name}/mod.rs"),
-                    ]
-                };
-                for path in paths {
-                    if let Some(&child) = by_path.get(&path) {
-                        mounted.insert(child);
-                        edges.push((
-                            ModuleMount {
-                                file: child,
-                                beside_file: explicit_path.is_some(),
-                            },
-                            *test_only,
-                        ));
-                    }
-                }
-            }
-            children.insert(mount, edges);
-        }
-    }
-    // Unmounted files remain production census inputs. Cargo supplies the
-    // actual entry points, including roots also imported by another module.
-    let mut pending: Vec<_> = (0..files.len())
-        .filter(|index| !mounted.contains(index))
-        .map(|file| {
-            (
-                ModuleMount {
-                    file,
-                    beside_file: false,
-                },
-                false,
-            )
-        })
-        .chain(
-            entry_points
-                .iter()
-                .filter_map(|path| by_path.get(path).copied())
-                .map(|file| {
-                    (
-                        ModuleMount {
-                            file,
-                            beside_file: true,
-                        },
-                        false,
-                    )
-                }),
-        )
-        .collect();
-    let mut reached = BTreeSet::new();
-    let mut tests = BTreeSet::new();
-    let mut production = BTreeSet::new();
-    while let Some((mount, in_tests)) = pending.pop() {
-        if reached.insert((mount, in_tests)) {
-            if in_tests {
-                tests.insert(mount.file);
-            } else {
-                production.insert(mount.file);
-            }
-            pending.extend(
-                children[&mount]
-                    .iter()
-                    .map(|(child, gated)| (*child, in_tests || *gated)),
-            );
-        }
-    }
-    for (index, file) in files.iter_mut().enumerate() {
-        file.test_file = tests.contains(&index) && !production.contains(&index);
-    }
-}
-
-/// The scanned-source test, shared by the disk walk and the git listing so
-/// both sides of `atlas diff` admit exactly the same files.
-fn is_rust_source(path: &Path) -> bool {
-    path.extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
-}
-
-fn collect_rs_files(dir: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
-    let entries =
-        fs::read_dir(dir).map_err(|err| format!("read source dir {}: {err}", dir.display()))?;
-    for entry in entries {
-        let entry =
-            entry.map_err(|err| format!("read source entry in {}: {err}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|err| format!("read file type {}: {err}", path.display()))?;
-        if file_type.is_dir() {
-            collect_rs_files(&path, paths)?;
-        } else if is_rust_source(&path) {
-            paths.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn rel_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-// ── the census policy ──────────────────────────────────────────────────────
-
-/// The one population filter: pub-ish (`pub` + `pub(crate)` + `pub(super)`)
-/// by default, strict `pub` under `--pub-only`.
 #[derive(Clone, Copy)]
 struct Filter {
     pub_only: bool,
@@ -664,16 +136,15 @@ struct Filter {
 }
 
 impl Filter {
-    fn admits(self, item: &Item) -> bool {
+    const fn selection(self) -> VisibilitySelection {
         if self.pub_only {
-            matches!(item.visibility, Visibility::Pub)
+            VisibilitySelection::Public
         } else if self.include_private {
-            true
+            VisibilitySelection::All
         } else {
-            !matches!(item.visibility, Visibility::Private)
+            VisibilitySelection::RestrictedOrPublic
         }
     }
-
     const fn label(self) -> &'static str {
         if self.pub_only {
             "pub"
@@ -685,128 +156,31 @@ impl Filter {
     }
 }
 
-/// Census rows are types and fns; `pub use` and `macro_rules!` are
-/// recorded beside them as aliases/macros, never as rows.
-const fn is_type_kind(kind: ItemKind) -> bool {
-    matches!(
-        kind,
-        ItemKind::Struct | ItemKind::Enum | ItemKind::Trait | ItemKind::TypeAlias
-    )
-}
-
-const fn is_census_kind(kind: ItemKind) -> bool {
-    is_type_kind(kind) || matches!(kind, ItemKind::Fn)
-}
-
-/// Every scanner-owned declaration that can be the endpoint of a re-export.
-const fn is_dump_kind(kind: ItemKind) -> bool {
-    !matches!(kind, ItemKind::PubUse | ItemKind::Impl)
-}
-
-/// One aggregated census cell — the fold every ladder rung shares.
-#[derive(Default, Clone, Copy)]
-struct Tally {
-    types: usize,
-    fns: usize,
-    aliases: usize,
-    macros: usize,
-    documented: usize,
-    nontest_loc: usize,
-}
-
-impl Tally {
-    fn add_file(&mut self, file: &FileMap, filter: Filter) {
-        self.nontest_loc += file.nontest_loc();
-        for item in file.production_items() {
-            match item.kind {
-                ItemKind::MacroRules => self.macros += 1,
-                ItemKind::PubUse if filter.admits(item) => self.aliases += 1,
-                kind if is_census_kind(kind) && filter.admits(item) => {
-                    if matches!(kind, ItemKind::Fn) {
-                        self.fns += 1;
-                    } else {
-                        self.types += 1;
-                    }
-                    if item.doc.is_some() {
-                        self.documented += 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn absorb(&mut self, other: Self) {
-        self.types += other.types;
-        self.fns += other.fns;
-        self.aliases += other.aliases;
-        self.macros += other.macros;
-        self.documented += other.documented;
-        self.nontest_loc += other.nontest_loc;
-    }
-
-    const fn census_items(&self) -> usize {
-        self.types + self.fns
-    }
-
-    /// Doc coverage in whole percent; `None` when the rung has no census rows.
-    fn doc_pct(&self) -> Option<usize> {
-        (self.census_items() > 0).then(|| self.documented * 100 / self.census_items())
-    }
-}
-
-// ── census: the aggregation ladder ─────────────────────────────────────────
-
 fn census(
-    ws: &Workspace,
+    navigation: &Navigation<'_>,
     key: Option<&str>,
-    graph: &Graph,
     filter: Filter,
     json: bool,
 ) -> Result<String> {
-    let key = key.map(|k| k.trim_end_matches('/'));
-    let key_column = if key.is_none() { "crate" } else { "module" };
-    let (scope, rows) = match key {
-        None => (
-            "workspace (per crate)".to_owned(),
-            ws.crates
-                .iter()
-                .map(|crate_map| {
-                    let mut tally = Tally::default();
-                    for file in &crate_map.files {
-                        tally.add_file(file, filter);
-                    }
-                    (crate_map.name.clone(), tally)
-                })
-                .collect::<Vec<_>>(),
-        ),
-        Some(k) => {
-            if let Some(crate_map) = ws.crate_named(k) {
-                (
-                    format!("{k} (per module under {}/)", crate_map.src_rel),
-                    dir_rows(ws, &crate_map.src_rel, filter),
-                )
-            } else if ws.file(k).is_some() {
-                // A module path is the ladder's deepest rung: the module card.
-                return module_card(ws, k, graph, filter, false, false, json);
-            } else if ws
-                .files()
-                .any(|file| file.rel.starts_with(&format!("{k}/")))
-            {
-                (format!("{k}/ (per child)"), dir_rows(ws, k, filter))
-            } else {
-                return Err(format!(
-                    "`{k}` is neither a workspace crate, a source directory, nor a module path"
-                ));
-            }
-        }
+    let report = navigation.census(key).map_err(|e| e.to_string())?;
+    let nav::Census::Rows(report) = report else {
+        return module_card(
+            navigation,
+            key.ok_or("missing module key")?,
+            filter,
+            false,
+            false,
+            json,
+        );
     };
-
-    let mut total = Tally::default();
-    for (_, tally) in &rows {
-        total.absorb(*tally);
-    }
-
+    let key_column = if key.is_none() { "crate" } else { "module" };
+    let scope = report.scope;
+    let rows: Vec<_> = report
+        .rows
+        .iter()
+        .map(|row| (&row.key, row.tally))
+        .collect();
+    let total = report.total;
     if json {
         let json_rows: Vec<_> = rows
             .iter()
@@ -837,27 +211,6 @@ fn census(
     ))
 }
 
-/// Rows for one directory rung: each child directory aggregated to one row
-/// (`name/`), each child file one row — never more than a directory's fanout.
-fn dir_rows(ws: &Workspace, prefix: &str, filter: Filter) -> Vec<(String, Tally)> {
-    let mut children: BTreeMap<String, Tally> = BTreeMap::new();
-    for file in ws.files() {
-        let Some(rest) = file
-            .rel
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_prefix('/'))
-        else {
-            continue;
-        };
-        let key = match rest.split_once('/') {
-            Some((segment, _)) => format!("{segment}/"),
-            None => rest.to_owned(),
-        };
-        children.entry(key).or_default().add_file(file, filter);
-    }
-    children.into_iter().collect()
-}
-
 fn tally_cells(key: &str, tally: &Tally) -> Vec<String> {
     vec![
         key.to_owned(),
@@ -885,11 +238,6 @@ fn tally_json(key: &str, tally: &Tally) -> serde_json::Value {
     })
 }
 
-// ── co-mention edges: the type graph without a parser ───────────────────────
-
-/// How one declaration mentions a type: a fn's parameter side `consumes`, a
-/// fn's return side `produces`, a struct/enum body `composes` (the mentioned
-/// type is a component of the source).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EdgeClass {
     Consumes,
@@ -924,153 +272,39 @@ struct Edge {
     ambiguous: bool,
 }
 
-/// The whole-workspace co-mention graph plus its orphan strip.
-struct Graph {
-    edges: Vec<Edge>,
-    /// Module → census-population type names no *other* declaration block
-    /// mentions anywhere in the workspace (name-sorted per module).
-    orphans: BTreeMap<String, Vec<String>>,
-}
-
-enum UniqueCandidate<'a, T> {
-    None,
-    One(&'a T),
-    Multiple,
-}
-
-fn unique_candidate<'a, T>(candidates: impl Iterator<Item = &'a T>) -> UniqueCandidate<'a, T> {
-    let mut found = None;
-    for candidate in candidates {
-        if found.is_some() {
-            return UniqueCandidate::Multiple;
-        }
-        found = Some(candidate);
-    }
-    found.map_or(UniqueCandidate::None, UniqueCandidate::One)
-}
-
-fn unique_local_candidate<T>(
-    candidates: &[T],
-    is_local: impl Fn(&T) -> bool,
-) -> UniqueCandidate<'_, T> {
-    match unique_candidate(candidates.iter().filter(|candidate| is_local(candidate))) {
-        UniqueCandidate::None => unique_candidate(candidates.iter()),
-        found => found,
-    }
-}
-
-/// One pass over every captured declaration block, looking up each
-/// identifier token in the census-population type registry. Re-exports are
-/// aliases, not uses: a `pub use` neither rescues a type from orphanhood nor
-/// forms an edge. Self-mentions (an item named like the type — its own
-/// declaration, its impl blocks) never count as mentions.
-fn build_graph(ws: &Workspace, filter: Filter) -> Graph {
-    struct Decl<'ws> {
-        crate_index: usize,
-        file: &'ws str,
-        line: usize,
-    }
-    let mut registry: BTreeMap<&str, Vec<Decl<'_>>> = BTreeMap::new();
-    let workspace_roots = ws
-        .crates
+fn presentation_edges(edges: &[nav::Edge]) -> Vec<Edge> {
+    edges
         .iter()
-        .map(|crate_map| crate_map.name.replace('-', "_"))
-        .collect::<BTreeSet<_>>();
-    for (crate_index, crate_map) in ws.crates.iter().enumerate() {
-        for file in &crate_map.files {
-            for item in file.production_items() {
-                let is_type = matches!(
-                    item.kind,
-                    ItemKind::Struct | ItemKind::Enum | ItemKind::Trait
-                );
-                if is_type && filter.admits(item) {
-                    registry.entry(item.name.as_str()).or_default().push(Decl {
-                        crate_index,
-                        file: file.rel.as_str(),
-                        line: item.line,
-                    });
-                }
+        .filter(|edge| !matches!(edge.resolution, Resolution::Unresolved(_)))
+        .map(|edge| {
+            let target = if matches!(edge.resolution, Resolution::Unique(_)) {
+                edge.candidates.first()
+            } else {
+                None
+            };
+            Edge {
+                source_file: edge.source.file.clone(),
+                source_line: edge.source.line,
+                source_name: edge.source.name.clone(),
+                class: match edge.evidence {
+                    Evidence::ParameterMention => EdgeClass::Consumes,
+                    Evidence::ReturnMention => EdgeClass::Produces,
+                    Evidence::TypeBodyMention => EdgeClass::Composes,
+                },
+                target: edge.target.clone(),
+                target_file: target.map(|s| s.file.clone()),
+                target_line: target.map(|s| s.line),
+                ambiguous: matches!(edge.resolution, Resolution::Ambiguous(_)),
             }
-        }
-    }
-
-    let mut mentioned: BTreeSet<&str> = BTreeSet::new();
-    let mut edges = Vec::new();
-    for (crate_index, crate_map) in ws.crates.iter().enumerate() {
-        for file in &crate_map.files {
-            let external_bindings = external_import_bindings(file, &workspace_roots);
-            for item in file.production_items() {
-                if item.kind == ItemKind::PubUse {
-                    continue;
-                }
-                let regions: Vec<(&str, EdgeClass)> = match item.kind {
-                    ItemKind::Fn => {
-                        let (params, ret) = split_signature(&item.declaration_block);
-                        vec![(params, EdgeClass::Consumes), (ret, EdgeClass::Produces)]
-                    }
-                    _ => vec![(item.declaration_block.as_str(), EdgeClass::Composes)],
-                };
-                // Trait/impl/alias/const blocks rescue orphans but form no
-                // classified edge — only fn signatures and struct/enum bodies
-                // carry the consume/produce/compose meaning.
-                let is_edge_source =
-                    matches!(item.kind, ItemKind::Fn | ItemKind::Struct | ItemKind::Enum);
-                let mut seen: BTreeSet<(&str, EdgeClass)> = BTreeSet::new();
-                for (region, class) in regions {
-                    for token in identifiers(region) {
-                        if token == item.name || external_bindings.suppresses(token) {
-                            continue;
-                        }
-                        let Some((name, decls)) = registry.get_key_value(token) else {
-                            continue;
-                        };
-                        mentioned.insert(name);
-                        if !is_edge_source || !seen.insert((name, class)) {
-                            continue;
-                        }
-                        let resolution =
-                            unique_local_candidate(decls, |decl| decl.crate_index == crate_index);
-                        let (target_file, target_line, ambiguous) = match resolution {
-                            UniqueCandidate::One(only) => {
-                                (Some(only.file.to_owned()), Some(only.line), false)
-                            }
-                            UniqueCandidate::None => (None, None, false),
-                            UniqueCandidate::Multiple => (None, None, true),
-                        };
-                        edges.push(Edge {
-                            source_file: file.rel.clone(),
-                            source_line: item.line,
-                            source_name: item.name.clone(),
-                            class,
-                            target: (*name).to_owned(),
-                            ambiguous,
-                            target_file,
-                            target_line,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    let mut orphans: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (name, decls) in &registry {
-        if mentioned.contains(name) {
-            continue;
-        }
-        for decl in decls {
-            orphans
-                .entry(decl.file.to_owned())
-                .or_default()
-                .push((*name).to_owned());
-        }
-    }
-    // Registry iteration is name-sorted, so each module's orphan list is too.
-    Graph { edges, orphans }
+        })
+        .collect()
 }
-
-// ── dump: the complete derived base for the concept spine ────────────────
-
+fn item_id(file: &str, line: usize, name: &str) -> String {
+    format!("{file}:{line}:{name}")
+}
+fn site_id(site: &Site) -> String {
+    item_id(&site.file, site.line, &site.name)
+}
 #[derive(Serialize)]
 struct Dump {
     verb: &'static str,
@@ -1106,409 +340,35 @@ struct DumpEdge {
     line: usize,
 }
 
-/// Serialize the workspace index already used by the cards. The dump is a
-/// machine-readable projection of declarations and declaration-level
-/// relationships, not a second stored authority.
-fn dump(ws: &Workspace, graph: &Graph, filter: Filter) -> Result<String> {
-    let mut items = Vec::new();
-    let mut admitted_sites = BTreeSet::new();
-    let mut declarations: BTreeMap<String, Vec<DumpDeclaration>> = BTreeMap::new();
-    let mut pending_reexports = Vec::new();
-    for (crate_index, crate_map) in ws.crates.iter().enumerate() {
-        for file in &crate_map.files {
-            let home = item_home(crate_map, file);
-            for item in file.production_items().filter(|item| filter.admits(item)) {
-                if item.kind == ItemKind::PubUse {
-                    pending_reexports.push(PendingReexport {
-                        crate_index,
-                        file: file.rel.clone(),
-                        home: home.clone(),
-                        line: item.line,
-                        visibility: item.visibility,
-                        crate_root: module_path_of(&crate_map.src_rel, &file.rel).is_none(),
-                        names: scan::import_bindings(&item.declaration_block),
-                    });
-                    continue;
-                }
-                if !is_dump_kind(item.kind) {
-                    continue;
-                }
-                admitted_sites.insert((file.rel.as_str(), item.line, item.name.as_str()));
-                let id = item_id(&file.rel, item.line, &item.name);
-                declarations
-                    .entry(item.name.clone())
-                    .or_default()
-                    .push(DumpDeclaration {
-                        crate_index,
-                        id: id.clone(),
-                        qualified: qualified_item_path(&home, &item.name),
-                    });
-                items.push(DumpItem {
-                    id,
-                    name: item.name.clone(),
-                    kind: kind_label(item.kind),
-                    home: home.clone(),
-                    file: file.rel.clone(),
-                    line: item.line,
-                    vis: dump_visibility_label(item.visibility),
-                    r#pub: matches!(item.visibility, Visibility::Pub),
-                });
-            }
-        }
-    }
-
-    let mut edges = Vec::new();
-    for edge in &graph.edges {
-        if !admitted_sites.contains(&(
-            edge.source_file.as_str(),
-            edge.source_line,
-            edge.source_name.as_str(),
-        )) {
-            continue;
-        }
-        edges.push(DumpEdge {
-            source: edge.source_name.clone(),
-            source_path: None,
-            source_id: Some(item_id(
-                &edge.source_file,
-                edge.source_line,
-                &edge.source_name,
-            )),
-            target: edge.target.clone(),
-            target_id: edge
-                .target_file
-                .as_ref()
-                .zip(edge.target_line)
-                .map(|(target_file, target_line)| item_id(target_file, target_line, &edge.target)),
-            target_file: edge.target_file.clone(),
-            ambiguous: edge.ambiguous,
-            unresolved: false,
-            kind: match edge.class {
-                EdgeClass::Consumes => "consumes",
-                EdgeClass::Produces => "produces",
-                EdgeClass::Composes => "composed-of",
-            },
-            file: edge.source_file.clone(),
-            line: edge.source_line,
-        });
-    }
-
-    for pending in pending_reexports {
-        let kind = reexport_edge_kind(pending.visibility, pending.crate_root);
-        for name in pending.names {
-            let target_id = item_id(&pending.file, pending.line, &name.local_name);
-            items.push(DumpItem {
-                id: target_id.clone(),
-                name: name.local_name.clone(),
-                kind: "re-export",
-                home: pending.home.clone(),
-                file: pending.file.clone(),
-                line: pending.line,
-                vis: dump_visibility_label(pending.visibility),
-                r#pub: matches!(pending.visibility, Visibility::Pub),
-            });
-            let source = resolve_declaration(
-                &declarations,
-                pending.crate_index,
-                &name.source,
-                &name.source_path,
-            );
-            edges.push(DumpEdge {
-                source: name.source,
-                source_path: Some(name.source_path),
-                source_id: source.id,
-                target: name.local_name,
-                target_id: Some(target_id),
-                target_file: Some(pending.file.clone()),
-                ambiguous: source.ambiguous,
-                unresolved: source.unresolved,
-                kind,
-                file: pending.file.clone(),
-                line: pending.line,
-            });
-        }
-    }
-    items.sort_by(|a, b| {
-        (a.file.as_str(), a.line, a.name.as_str(), a.kind).cmp(&(
-            b.file.as_str(),
-            b.line,
-            b.name.as_str(),
-            b.kind,
-        ))
-    });
-    edges.sort_by(|a, b| {
-        (
-            a.file.as_str(),
-            a.line,
-            a.source.as_str(),
-            a.kind,
-            a.target.as_str(),
-        )
-            .cmp(&(
-                b.file.as_str(),
-                b.line,
-                b.source.as_str(),
-                b.kind,
-                b.target.as_str(),
-            ))
-    });
-
-    let value = Dump {
-        verb: "dump",
-        population: filter.label(),
-        items,
-        edges,
-    };
-    let mut bytes = Vec::new();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"");
-    let mut serializer = serde_json::Serializer::with_formatter(&mut bytes, formatter);
-    value
-        .serialize(&mut serializer)
-        .map_err(|err| format!("serialize atlas dump: {err}"))?;
-    String::from_utf8(bytes).map_err(|err| format!("encode atlas dump as UTF-8: {err}"))
-}
-
-struct DumpDeclaration {
-    crate_index: usize,
-    id: String,
-    qualified: String,
-}
-
-struct PendingReexport {
-    crate_index: usize,
-    file: String,
-    home: String,
-    line: usize,
-    visibility: Visibility,
-    crate_root: bool,
-    names: Vec<scan::ImportBinding>,
-}
-
-struct ResolvedDeclaration {
-    id: Option<String>,
-    ambiguous: bool,
-    unresolved: bool,
-}
-
-fn resolve_declaration(
-    declarations: &BTreeMap<String, Vec<DumpDeclaration>>,
-    crate_index: usize,
-    name: &str,
-    source_path: &str,
-) -> ResolvedDeclaration {
-    let Some(candidates) = declarations.get(name) else {
-        return ResolvedDeclaration {
-            id: None,
-            ambiguous: false,
-            unresolved: true,
-        };
-    };
-    if source_path.contains("::") {
-        let suffix = normalized_source_suffix(source_path);
-        match unique_candidate(
-            candidates
-                .iter()
-                .filter(|candidate| candidate.qualified.ends_with(&suffix)),
-        ) {
-            UniqueCandidate::One(only) => {
-                return ResolvedDeclaration {
-                    id: Some(only.id.clone()),
-                    ambiguous: false,
-                    unresolved: false,
-                };
-            }
-            UniqueCandidate::Multiple => {
-                return ResolvedDeclaration {
-                    id: None,
-                    ambiguous: true,
-                    unresolved: false,
-                };
-            }
-            UniqueCandidate::None => {}
-        }
-    }
-    match unique_local_candidate(candidates, |candidate| candidate.crate_index == crate_index) {
-        UniqueCandidate::One(only) => ResolvedDeclaration {
-            id: Some(only.id.clone()),
-            ambiguous: false,
-            unresolved: false,
-        },
-        UniqueCandidate::Multiple => ResolvedDeclaration {
-            id: None,
-            ambiguous: true,
-            unresolved: false,
-        },
-        UniqueCandidate::None => ResolvedDeclaration {
-            id: None,
-            ambiguous: false,
-            unresolved: true,
-        },
-    }
-}
-
-fn normalized_source_suffix(path: &str) -> String {
-    path.trim_start_matches("::")
-        .trim_start_matches("crate::")
-        .trim_start_matches("self::")
-        .trim_start_matches("super::")
-        .replace('-', "_")
-}
-
-fn qualified_item_path(home: &str, name: &str) -> String {
-    let home = home
-        .strip_suffix("::lib")
-        .or_else(|| home.strip_suffix("::main"))
-        .unwrap_or(home)
-        .replace('-', "_");
-    format!("{home}::{name}")
-}
-
-fn item_id(file: &str, line: usize, name: &str) -> String {
-    format!("{file}:{line}:{name}")
-}
-
-const fn reexport_edge_kind(visibility: Visibility, crate_root: bool) -> &'static str {
-    if matches!(visibility, Visibility::Pub) && crate_root {
-        "facade"
-    } else {
-        "re-exports"
-    }
-}
-
-const fn dump_visibility_label(visibility: Visibility) -> &'static str {
-    match visibility {
-        Visibility::Pub => "pub",
-        Visibility::PubCrate => "crate",
-        Visibility::PubSuper => "super",
-        Visibility::Private => "private",
-    }
-}
-
-/// The crate-qualified module that owns an item. Crate roots retain `lib` or
-/// `main`, because those are distinct homes even though neither has a Rust
-/// module-path segment.
-fn item_home(crate_map: &CrateMap, file: &FileMap) -> String {
-    let inside = file
-        .rel
-        .strip_prefix(&crate_map.src_rel)
-        .and_then(|rest| rest.strip_prefix('/'))
-        .unwrap_or(file.rel.as_str());
-    let stem = inside.strip_suffix(".rs").unwrap_or(inside);
-    let module = stem.strip_suffix("/mod").unwrap_or(stem).replace('/', "::");
-    format!("{}::{module}", crate_map.name)
-}
-
-/// Split a fn signature block at the depth-0 `->` into (parameter side,
-/// return side). Arrows inside generic bounds or nested fn types
-/// (`F: Fn() -> T`) sit at bracket depth > 0 and are skipped.
-fn split_signature(block: &str) -> (&str, &str) {
-    let bytes = block.as_bytes();
-    let mut paren = 0usize;
-    let mut angle = 0usize;
-    let mut previous = b' ';
-    for (index, &byte) in bytes.iter().enumerate() {
-        match byte {
-            b'(' => paren += 1,
-            b')' => paren = paren.saturating_sub(1),
-            b'<' => angle += 1,
-            b'>' if previous != b'-' => angle = angle.saturating_sub(1),
-            b'-' if paren == 0 && angle == 0 && bytes.get(index + 1) == Some(&b'>') => {
-                return (&block[..index], &block[index + 2..]);
-            }
-            _ => {}
-        }
-        previous = byte;
-    }
-    (block, "")
-}
-
-/// Identifier-bounded tokens of a declaration block — the mention grammar.
-fn identifiers(text: &str) -> impl Iterator<Item = &str> {
-    text.split(|ch: char| !(ch == '_' || ch.is_ascii_alphanumeric()))
-        .filter(|token| !token.is_empty() && !token.starts_with(|ch: char| ch.is_ascii_digit()))
-}
-
-// ── name: one name's card ───────────────────────────────────────────────────
-
-/// Edges shown per direction on a name card before "(+N more)", keeping the
-/// card to roughly a screenful.
 const NAME_EDGE_BUDGET: usize = 8;
 
 fn name_card(
-    ws: &Workspace,
+    navigation: &Navigation<'_>,
     query: &str,
-    graph: &Graph,
     filter: Filter,
     json: bool,
 ) -> Result<String> {
-    let (fragment, name) = match query.rsplit_once("::") {
-        Some((fragment, name)) => (Some(fragment.replace("::", "/")), name),
-        None => (None, query),
-    };
-    let in_fragment = |rel: &str| {
-        fragment.as_deref().is_none_or(|frag| {
-            rel == frag
-                || rel.ends_with(&format!("/{frag}"))
-                || rel.ends_with(&format!("/{frag}.rs"))
-        })
-    };
-
-    // Declarations: every named kind except re-exports (façades are listed
-    // separately — the definition site is canonical).
-    let mut shown: Vec<(&FileMap, &Item)> = Vec::new();
-    let mut hidden = 0usize;
-    let mut reexports: Vec<String> = Vec::new();
-    let mut impls: Vec<String> = Vec::new();
-    let mut defining: BTreeSet<(&str, usize)> = BTreeSet::new();
-    for file in ws.files() {
-        for item in file.production_items() {
-            if item.kind == ItemKind::PubUse {
-                if in_fragment(&file.rel)
-                    && scan::import_bindings(&item.declaration_block)
-                        .iter()
-                        .any(|export| export.source == name || export.local_name == name)
-                {
-                    reexports.push(format!("{}:{}", file.rel, item.line));
-                }
-                continue;
-            }
-            if item.name != name || !in_fragment(&file.rel) {
-                continue;
-            }
-            // Impl blocks carry the type's name but declare nothing new: they
-            // are a strip on the card, not declaration matches.
-            if item.kind == ItemKind::Impl {
-                impls.push(format!("{}:{}", file.rel, item.line));
-                continue;
-            }
-            defining.insert((file.rel.as_str(), item.line));
-            if filter.admits(item) {
-                shown.push((file, item));
-            } else {
-                hidden += 1;
-            }
-        }
-    }
-    if shown.is_empty() && hidden == 0 {
-        return Err(format!(
-            "no declaration of `{query}` in the atlas scope \
-(macro-generated declarations are outside the line grammar — a known blind spot)"
-        ));
-    }
-    shown.sort_by(|a, b| (a.0.rel.as_str(), a.1.line).cmp(&(b.0.rel.as_str(), b.1.line)));
-
-    // The cheap reference count: textual, identifier-bounded, defining lines
-    // excluded — approximate by design.
-    let mut refs = 0usize;
-    for file in ws.files() {
-        for (line_number, line) in file.production_code_lines() {
-            if defining.contains(&(file.rel.as_str(), line_number)) {
-                continue;
-            }
-            refs += count_word_occurrences(line, name);
-        }
-    }
-
+    let report = navigation.name(query).map_err(|e| e.to_string())?;
+    let name = query.rsplit("::").next().unwrap_or(query);
+    let shown: Vec<_> = report.matches.iter().map(|site| (site, site)).collect();
+    let hidden = report.hidden;
+    let reexports: Vec<_> = report
+        .reexports
+        .iter()
+        .map(|s| format!("{}:{}", s.file, s.line))
+        .collect();
+    let impls: Vec<_> = report
+        .impls
+        .iter()
+        .map(|s| format!("{}:{}", s.file, s.line))
+        .collect();
+    let defining: BTreeSet<_> = report
+        .matches
+        .iter()
+        .map(|s| (s.file.as_str(), s.line))
+        .collect();
+    let refs = report.refs_approx;
+    let graph = presentation_edges(&report.edges);
     // Co-mention edges. Incoming when the name is a type — who
     // produces, consumes, and composes it; outgoing when it is a fn — what
     // its own signature consumes and produces. `?` marks an ambiguous edge:
@@ -1522,7 +382,6 @@ fn name_card(
     let is_fn_match = shown.iter().any(|(_, item)| item.kind == ItemKind::Fn);
     let incoming = |class: EdgeClass| -> Vec<&Edge> {
         let mut found: Vec<&Edge> = graph
-            .edges
             .iter()
             .filter(|edge| edge.class == class && edge.target == name)
             .collect();
@@ -1542,7 +401,6 @@ fn name_card(
     };
     let outgoing = |class: EdgeClass| -> Vec<&Edge> {
         let mut found: Vec<&Edge> = graph
-            .edges
             .iter()
             .filter(|edge| {
                 edge.class == class
@@ -1602,7 +460,7 @@ fn name_card(
             .iter()
             .map(|(file, item)| {
                 json!({
-                    "path": file.rel,
+                    "path": file.file,
                     "line": item.line,
                     "kind": kind_label(item.kind),
                     "visibility": visibility_label(item.visibility),
@@ -1688,7 +546,7 @@ fn name_card(
     for (file, item) in &shown {
         lines.push(format!(
             "{}:{}  {}  {}",
-            file.rel,
+            file.file,
             item.line,
             kind_label(item.kind),
             visibility_label(item.visibility),
@@ -1701,28 +559,6 @@ fn name_card(
     Ok(lines.join("\n"))
 }
 
-/// Occurrences of `name` delimited by non-identifier characters. Textual:
-/// strings and comments count — the reference count is labeled approximate.
-fn count_word_occurrences(text: &str, name: &str) -> usize {
-    let bytes = text.as_bytes();
-    text.match_indices(name)
-        .filter(|(start, _)| {
-            let end = start + name.len();
-            let before_ok = *start == 0 || !is_ident_byte(bytes[start - 1]);
-            let after_ok = end >= bytes.len() || !is_ident_byte(bytes[end]);
-            before_ok && after_ok
-        })
-        .count()
-}
-
-const fn is_ident_byte(byte: u8) -> bool {
-    byte == b'_' || byte.is_ascii_alphanumeric()
-}
-
-// ── module: one module's card ──────────────────────────────────────────────
-
-/// Per-item listings above this budget summarize by kind so each rung stays
-/// near a screenful; `--items` restores the full table.
 const MODULE_ITEM_BUDGET: usize = 30;
 
 /// `--graph` edge lists above this budget summarize to per-class counts and
@@ -1734,52 +570,34 @@ const MODULE_GRAPH_BUDGET: usize = 40;
     reason = "the two bools mirror the two CLI flags (--items, --graph); a config struct would only rename them"
 )]
 fn module_card(
-    ws: &Workspace,
+    navigation: &Navigation<'_>,
     path: &str,
-    graph: &Graph,
     filter: Filter,
     show_items: bool,
     show_graph: bool,
     json: bool,
 ) -> Result<String> {
-    let path = path.trim_start_matches("./");
-    let (crate_map, file) = ws.file(path).ok_or_else(|| {
-        format!(
-            "no workspace module at `{path}` (module keys are workspace-relative paths \
-             like crates/<crate>/src/<module>.rs)"
-        )
-    })?;
-    let header = file.projection.module_header_lines().first().cloned();
-    let mut tally = Tally::default();
-    tally.add_file(file, filter);
-    let undocumented = file
-        .production_items()
-        .filter(|item| is_census_kind(item.kind) && filter.admits(item) && item.doc.is_none())
-        .count();
-    let (imports, internal) = fan_out(file);
-    let fan_in_files = fan_in(crate_map, file);
-    let orphans = graph
-        .orphans
-        .get(&file.rel)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    // The module's own co-mention edges, deterministically ordered.
-    let mut module_edges: Vec<&Edge> = graph
-        .edges
-        .iter()
-        .filter(|edge| edge.source_file == file.rel)
-        .collect();
+    let report = navigation.module(path).map_err(|e| e.to_string())?;
+    let context = report
+        .contexts
+        .first()
+        .ok_or("module lacks package context")?;
+    let header = context.header.first().cloned();
+    let tally = context.tally;
+    let undocumented = context.undocumented;
+    let (imports, internal) = (context.imports, context.internal_imports);
+    let fan_in_files = &context.fan_in_files;
+    let mut orphans = context.unmentioned_names.clone();
+    orphans.sort();
+    let edges = presentation_edges(&context.edges);
+    let mut module_edges: Vec<_> = edges.iter().collect();
     module_edges.sort_by(|a, b| {
-        (a.source_line, a.class, a.target.as_str()).cmp(&(
-            b.source_line,
-            b.class,
-            b.target.as_str(),
-        ))
+        (a.source_line, a.class, &a.target).cmp(&(b.source_line, b.class, &b.target))
     });
-
     if json {
-        let items: Vec<_> = file
-            .production_items()
+        let items: Vec<_> = context
+            .items
+            .iter()
             .map(|item| {
                 json!({
                     "line": item.line,
@@ -1792,11 +610,11 @@ fn module_card(
             .collect();
         let mut card = json!({
             "verb": "module",
-            "path": file.rel,
-            "crate": crate_map.name,
+            "path": report.path,
+            "crate": context.package,
             "header": header,
-            "nontest_loc": file.nontest_loc(),
-            "census": tally_json(&file.rel, &tally),
+            "nontest_loc": tally.nontest_loc,
+            "census": tally_json(&report.path, &tally),
             "undocumented": undocumented,
             "fan_out": {"imports": imports, "crate_internal": internal},
             "fan_in_files": fan_in_files,
@@ -1826,14 +644,17 @@ fn module_card(
     }
 
     let mut lines = Vec::new();
-    lines.push(format!("atlas module — {} ({})", file.rel, crate_map.name));
+    lines.push(format!(
+        "atlas module — {} ({})",
+        report.path, context.package
+    ));
     lines.push(header.map_or_else(
         || "//! MISSING — no module header".to_owned(),
         |first| format!("//! {first}"),
     ));
     lines.push(format!(
         "nontest-loc: {} · census ({}): {} types, {} fns, {} aliases, {} macros · undocumented {}: {undocumented}",
-        file.nontest_loc(),
+        tally.nontest_loc,
         filter.label(),
         tally.types,
         tally.fns,
@@ -1902,7 +723,7 @@ fn module_card(
             for edge in &module_edges {
                 let site = match (&edge.target_file, edge.ambiguous) {
                     (_, true) => " (ambiguous)".to_owned(),
-                    (Some(target_file), _) if *target_file != file.rel => {
+                    (Some(target_file), _) if target_file != &report.path => {
                         format!(" ({target_file})")
                     }
                     _ => String::new(),
@@ -1917,11 +738,11 @@ fn module_card(
             }
         }
     }
-    let item_count = file.production_items().count();
+    let item_count = context.items.len();
     if !show_items && item_count > MODULE_ITEM_BUDGET {
         let mut kinds: std::collections::BTreeMap<&str, (usize, usize)> =
             std::collections::BTreeMap::new();
-        for item in file.production_items() {
+        for item in &context.items {
             let entry = kinds.entry(kind_label(item.kind)).or_default();
             entry.0 += 1;
             if item.doc.is_none() {
@@ -1938,8 +759,9 @@ summarized by kind — pass --items for the full table)"
         return Ok(lines.join("\n"));
     }
     lines.push("items:".to_owned());
-    let rows: Vec<Vec<String>> = file
-        .production_items()
+    let rows: Vec<Vec<String>> = context
+        .items
+        .iter()
         .map(|item| {
             vec![
                 item.line.to_string(),
@@ -1960,484 +782,6 @@ summarized by kind — pass --items for the full table)"
     ));
     Ok(lines.join("\n"))
 }
-
-/// Textual `use`-import fan-out over the production region: `(all imports,
-/// crate-internal imports)`. A labeled heuristic, not compiler truth.
-fn fan_out(file: &FileMap) -> (usize, usize) {
-    let mut imports = 0usize;
-    let mut internal = 0usize;
-    for (_, line) in file.production_code_lines() {
-        let Some(target) = use_import(line) else {
-            continue;
-        };
-        imports += 1;
-        if ["crate::", "super::", "self::"]
-            .iter()
-            .any(|prefix| target.starts_with(prefix))
-        {
-            internal += 1;
-        }
-    }
-    (imports, internal)
-}
-
-fn use_import(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start();
-    [
-        "use ",
-        "pub use ",
-        "pub(crate) use ",
-        "pub(super) use ",
-        "pub(self) use ",
-    ]
-    .iter()
-    .find_map(|prefix| trimmed.strip_prefix(prefix))
-    .map(str::trim_start)
-}
-
-/// Bindings introduced by `use` statements rooted outside this workspace.
-///
-/// This extends the Atlas's textual import grammar rather than adding a
-/// second Rust parser. Suppressing an unresolved external binding is safer
-/// than claiming it names a same-spelled workspace declaration.
-struct ExternalImportBindings {
-    names: BTreeSet<String>,
-    has_glob: bool,
-}
-
-impl ExternalImportBindings {
-    fn suppresses(&self, name: &str) -> bool {
-        self.has_glob || self.names.contains(name)
-    }
-
-    fn absorb_import(&mut self, use_tree: &str) {
-        for binding in scan::import_bindings_from_use_tree(use_tree) {
-            if binding.local_name == "*" {
-                self.has_glob = true;
-            } else {
-                self.names.insert(binding.local_name);
-            }
-        }
-    }
-}
-
-/// Collect external import bindings that suppress same-named graph edges.
-fn external_import_bindings(
-    file: &FileMap,
-    workspace_roots: &BTreeSet<String>,
-) -> ExternalImportBindings {
-    let mut bindings = ExternalImportBindings {
-        names: BTreeSet::new(),
-        has_glob: false,
-    };
-    let mut statement = None::<String>;
-    for (_, line) in file.production_code_lines() {
-        if let Some(current) = statement.as_mut() {
-            current.push(' ');
-            current.push_str(line.trim());
-        } else if let Some(target) = use_import(line) {
-            statement = Some(target.to_owned());
-        }
-        let Some(current) = statement.as_ref() else {
-            continue;
-        };
-        if !current.contains(';') {
-            continue;
-        }
-        let completed = statement.take().expect("completed import statement");
-        let completed = completed.split(';').next().unwrap_or_default().trim();
-        if completed.starts_with('{') {
-            continue;
-        }
-        let mut tokens = identifiers(completed);
-        let Some(root) = tokens.next() else {
-            continue;
-        };
-        if matches!(root, "crate" | "super" | "self") || workspace_roots.contains(root) {
-            continue;
-        }
-        bindings.absorb_import(completed);
-    }
-    bindings
-}
-
-/// Files in the same crate whose `use` lines mention this module's path or
-/// its final segment — the labeled fan-in heuristic. `None` for crate roots:
-/// every `crate::` path references them, so the count would be noise.
-fn fan_in<'a>(crate_map: &'a CrateMap, file: &FileMap) -> Option<Vec<&'a str>> {
-    let module_path = module_path_of(&crate_map.src_rel, &file.rel)?;
-    let segment = module_path
-        .rsplit("::")
-        .next()
-        .unwrap_or(module_path.as_str())
-        .to_owned();
-    let mut files = Vec::new();
-    for other in &crate_map.files {
-        if other.rel == file.rel {
-            continue;
-        }
-        let mentions = other
-            .production_code_lines()
-            .map(|(_, line)| line)
-            .filter_map(use_import)
-            .any(|target| {
-                target.contains(&module_path) || count_word_occurrences(target, &segment) > 0
-            });
-        if mentions {
-            files.push(other.rel.as_str());
-        }
-    }
-    Some(files)
-}
-
-/// The `::`-joined module path of a file within its crate (`src/a/b.rs` →
-/// `a::b`, `src/a/mod.rs` → `a`); `None` for the crate root.
-fn module_path_of(src_rel: &str, rel: &str) -> Option<String> {
-    let inside = rel.strip_prefix(src_rel)?.strip_prefix('/')?;
-    let stem = inside.strip_suffix(".rs")?;
-    let stem = stem.strip_suffix("/mod").unwrap_or(stem);
-    if matches!(stem, "lib" | "main" | "mod") {
-        return None;
-    }
-    Some(stem.replace('/', "::"))
-}
-
-/// Marker substrings that count a `//!` header as citing its authority
-/// (the master spec, a CR decision, or another `.design` spec) for the comments
-/// audit.
-const CITATION_MARKERS: &[&str] = &[".design", "corpus-runtime", "CR-", "§"];
-
-fn cites(header_block: &str) -> bool {
-    CITATION_MARKERS
-        .iter()
-        .any(|marker| header_block.contains(marker))
-}
-
-#[derive(Default, Clone, Copy)]
-struct AuditRow {
-    files: usize,
-    missing_header: usize,
-    uncited_header: usize,
-    items: usize,
-    undocumented: usize,
-}
-
-impl AuditRow {
-    fn absorb(&mut self, other: Self) {
-        self.files += other.files;
-        self.missing_header += other.missing_header;
-        self.uncited_header += other.uncited_header;
-        self.items += other.items;
-        self.undocumented += other.undocumented;
-    }
-}
-
-fn comments_audit(ws: &Workspace, filter: Filter, json: bool) -> Result<String> {
-    let rows: Vec<(String, AuditRow)> = ws
-        .crates
-        .iter()
-        .map(|crate_map| {
-            let mut row = AuditRow::default();
-            for file in &crate_map.files {
-                row.files += 1;
-                let header = file.projection.module_header_lines();
-                if header.is_empty() {
-                    row.missing_header += 1;
-                } else if !cites(&header.join("\n")) {
-                    row.uncited_header += 1;
-                }
-                for item in file
-                    .production_items()
-                    .filter(|item| is_census_kind(item.kind) && filter.admits(item))
-                {
-                    row.items += 1;
-                    if item.doc.is_none() {
-                        row.undocumented += 1;
-                    }
-                }
-            }
-            (crate_map.name.clone(), row)
-        })
-        .collect();
-
-    let mut total = AuditRow::default();
-    for (_, row) in &rows {
-        total.absorb(*row);
-    }
-
-    let row_json = |key: &str, row: &AuditRow| {
-        json!({
-            "key": key,
-            "files": row.files,
-            "missing_header": row.missing_header,
-            "uncited_header": row.uncited_header,
-            "items": row.items,
-            "undocumented": row.undocumented,
-        })
-    };
-    if json {
-        let json_rows: Vec<_> = rows.iter().map(|(key, row)| row_json(key, row)).collect();
-        return pretty(&json!({
-            "verb": "comments",
-            "population": filter.label(),
-            "citation_markers": CITATION_MARKERS,
-            "rows": json_rows,
-            "total": row_json("TOTAL", &total),
-        }));
-    }
-
-    let row_cells = |key: &str, row: &AuditRow| {
-        vec![
-            key.to_owned(),
-            row.files.to_string(),
-            row.missing_header.to_string(),
-            row.uncited_header.to_string(),
-            row.items.to_string(),
-            row.undocumented.to_string(),
-        ]
-    };
-    let mut cells: Vec<Vec<String>> = rows.iter().map(|(key, row)| row_cells(key, row)).collect();
-    cells.push(row_cells("TOTAL", &total));
-    Ok(format!(
-        "atlas comments --audit · population: {} · uncited = //! block missing all of {:?}\n{}",
-        filter.label(),
-        CITATION_MARKERS,
-        render_table(
-            &["crate", "files", "no-//!", "uncited-//!", "items", "no-///"],
-            &cells,
-            1,
-        )
-    ))
-}
-
-/// The largest single top-level item block on the production side of the test
-/// boundary: each top-level item's span runs to the next top-level item (or
-/// the boundary), and the file's concentration is the max span. A max, never
-/// a mean — the mean is what the cut density grade tried and it could not see
-/// a god-impl diluted among many small items.
-fn max_block(file: &FileMap) -> Option<(usize, &Item)> {
-    let mut tops: Vec<&Item> = file.items.iter().filter(|item| item.top_level).collect();
-    tops.sort_by_key(|item| item.line);
-    let end_of_file = file.projection.text().lines().count() + 1;
-    let mut best: Option<(usize, &Item)> = None;
-    for (index, item) in tops.iter().enumerate() {
-        // A block ends at whichever comes first: the next top-level item or
-        // the next test region. Both bounds are needed — the region catches
-        // trailing tests whose declaration the line grammar did not record,
-        // which is what let a block measure wider than its own module.
-        let next_item = tops.get(index + 1).map_or(end_of_file, |next| next.line);
-        let next_region = file
-            .regions
-            .next_start_after(item.line)
-            .unwrap_or(end_of_file);
-        let span = next_item.min(next_region).saturating_sub(item.line);
-        let production = !file.test_file && !file.regions.covers(item.line);
-        if production && best.as_ref().is_none_or(|(top, _)| span > *top) {
-            best = Some((span, item));
-        }
-    }
-    best
-}
-
-/// The concentration report — the spec's named successor to the failed
-/// per-module mean grade: a per-module **max**, never a mean,
-/// because a mean cannot see a god-impl diluted among many small top-level
-/// items. For every module, the largest single top-level item block on the
-/// production side of the test boundary, measured as the line span to the
-/// next top-level item (exact up to trailing blank lines under rustfmt's
-/// column-0 discipline — approximate by design, like every atlas edge).
-/// Alongside it, the module's top-level item count — the *breadth* axis. The
-/// two are orthogonal pathologies and neither sees the other: a 6k-line
-/// `impl` is one item, and a 344-item module has no large block. Reading them
-/// together is the point of one table.
-/// Report-only: not a gate, not a ledger.
-fn concentration(ws: &Workspace, key: Option<&str>, json: bool) -> Result<String> {
-    struct Row {
-        rel: String,
-        nontest_loc: usize,
-        block_loc: usize,
-        items: usize,
-        kind: ItemKind,
-        name: String,
-        line: usize,
-    }
-    let mut rows = Vec::new();
-    for crate_map in &ws.crates {
-        if let Some(key) = key
-            && crate_map.name != key
-            && !crate_map.src_rel.starts_with(key)
-        {
-            continue;
-        }
-        for file in &crate_map.files {
-            if let Some((span, item)) = max_block(file) {
-                rows.push(Row {
-                    rel: file.rel.clone(),
-                    nontest_loc: file.nontest_loc(),
-                    block_loc: span,
-                    items: file
-                        .production_items()
-                        .filter(|item| item.top_level)
-                        .count(),
-                    kind: item.kind,
-                    name: item.name.clone(),
-                    line: item.line,
-                });
-            }
-        }
-    }
-    rows.sort_by(|a, b| b.block_loc.cmp(&a.block_loc).then(a.rel.cmp(&b.rel)));
-    if json {
-        let values: Vec<_> = rows
-            .iter()
-            .map(|row| {
-                json!({
-                    "module": row.rel,
-                    "nontest_loc": row.nontest_loc,
-                    "max_block_loc": row.block_loc,
-                    "top_level_items": row.items,
-                    "kind": kind_label(row.kind),
-                    "name": row.name,
-                    "line": row.line,
-                })
-            })
-            .collect();
-        return pretty(&json!({ "verb": "concentration", "rows": values }));
-    }
-    let total = rows.len();
-    rows.truncate(25);
-    let cells: Vec<Vec<String>> = rows
-        .iter()
-        .map(|row| {
-            vec![
-                row.rel.clone(),
-                format!("{} {}:{}", kind_label(row.kind), row.name, row.line),
-                row.block_loc.to_string(),
-                row.nontest_loc.to_string(),
-                format!("{}%", 100 * row.block_loc / row.nontest_loc.max(1)),
-                row.items.to_string(),
-            ]
-        })
-        .collect();
-    Ok(format!(
-        "atlas concentration — depth (largest top-level block) and breadth (item count) per module (top {} of {total})\n\n{}",
-        rows.len(),
-        render_table(
-            &[
-                "module",
-                "largest block",
-                "block-loc",
-                "nontest-loc",
-                "share",
-                "items"
-            ],
-            &cells,
-            2,
-        )
-    ))
-}
-
-/// What a change did to the shape of every module it touched. For each module
-/// whose depth, breadth, or non-test LOC moved against a git ref, one row — so
-/// "an arc touching a monolith must shrink it" is evidence a landing can quote
-/// rather than a promise it makes.
-/// Unchanged modules are omitted; a module absent on one side reads as 0.
-fn diff(ws: &Workspace, reference: &str, json: bool) -> Result<String> {
-    #[derive(Default, Clone, Copy, PartialEq, Eq)]
-    struct Shape {
-        nontest_loc: usize,
-        block_loc: usize,
-        items: usize,
-    }
-    fn shapes(ws: &Workspace) -> BTreeMap<String, Shape> {
-        ws.files()
-            .map(|file| {
-                let shape = Shape {
-                    nontest_loc: file.nontest_loc(),
-                    block_loc: max_block(file).map_or(0, |(span, _)| span),
-                    items: file
-                        .production_items()
-                        .filter(|item| item.top_level)
-                        .count(),
-                };
-                (file.rel.clone(), shape)
-            })
-            .collect()
-    }
-
-    let before = shapes(&ws.at_ref(reference)?);
-    let after = shapes(ws);
-    let moved: Vec<(String, Shape, Shape)> = before
-        .keys()
-        .chain(after.keys())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|rel| {
-            let (old, new) = (
-                before.get(rel).copied().unwrap_or_default(),
-                after.get(rel).copied().unwrap_or_default(),
-            );
-            (rel.clone(), old, new)
-        })
-        .filter(|(_, old, new)| old != new)
-        .collect();
-    let delta = |old: usize, new: usize| new.cast_signed() - old.cast_signed();
-    let signed = |value: isize| {
-        if value > 0 {
-            format!("+{value}")
-        } else {
-            value.to_string()
-        }
-    };
-
-    if json {
-        let values: Vec<_> = moved
-            .iter()
-            .map(|(rel, old, new)| {
-                json!({
-                    "module": rel,
-                    "nontest_loc": [old.nontest_loc, new.nontest_loc],
-                    "max_block_loc": [old.block_loc, new.block_loc],
-                    "top_level_items": [old.items, new.items],
-                })
-            })
-            .collect();
-        return pretty(&json!({ "verb": "diff", "reference": reference, "rows": values }));
-    }
-
-    let total: isize = moved
-        .iter()
-        .map(|(_, old, new)| delta(old.nontest_loc, new.nontest_loc))
-        .sum();
-    let mut ranked = moved;
-    ranked.sort_by_key(|(_, old, new)| -delta(old.nontest_loc, new.nontest_loc).abs());
-    let shown = ranked.len().min(25);
-    let cells: Vec<Vec<String>> = ranked
-        .iter()
-        .take(shown)
-        .map(|(rel, old, new)| {
-            vec![
-                rel.clone(),
-                signed(delta(old.nontest_loc, new.nontest_loc)),
-                signed(delta(old.block_loc, new.block_loc)),
-                signed(delta(old.items, new.items)),
-                format!("{} → {}", old.nontest_loc, new.nontest_loc),
-            ]
-        })
-        .collect();
-    Ok(format!(
-        "atlas diff — module shape against {reference} ({shown} of {} moved; net non-test {})\n\n{}",
-        ranked.len(),
-        signed(total),
-        render_table(
-            &["module", "Δloc", "Δblock", "Δitems", "non-test"],
-            &cells,
-            1,
-        )
-    ))
-}
-
-// ── rendering ──────────────────────────────────────────────────────────────
 
 fn pretty(value: &serde_json::Value) -> Result<String> {
     serde_json::to_string_pretty(value).map_err(|err| format!("serialize atlas json: {err}"))
@@ -2491,13 +835,16 @@ fn truncated(text: &str, max_chars: usize) -> String {
 
 const fn kind_label(kind: ItemKind) -> &'static str {
     match kind {
+        ItemKind::Union => "union",
+        ItemKind::Use => "use",
+        ItemKind::Extern => "extern",
+        ItemKind::MacroCall | ItemKind::MacroRules => "macro",
         ItemKind::Struct => "struct",
         ItemKind::Enum => "enum",
         ItemKind::Trait => "trait",
         ItemKind::TypeAlias => "type",
         ItemKind::Fn => "fn",
         ItemKind::Mod => "mod",
-        ItemKind::MacroRules => "macro",
         ItemKind::PubUse => "pub-use",
         ItemKind::Const => "const",
         ItemKind::Static => "static",
@@ -2508,1078 +855,160 @@ const fn kind_label(kind: ItemKind) -> &'static str {
 const fn visibility_label(visibility: Visibility) -> &'static str {
     match visibility {
         Visibility::Pub => "pub",
-        Visibility::PubCrate => "pub(crate)",
+        Visibility::PubCrate | Visibility::PubIn => "pub(crate)",
         Visibility::PubSuper => "pub(super)",
         Visibility::Private => "private",
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn invocation_validation_rejects_silent_flag_and_shape_mismatches() {
-        assert!(
-            validate_invocation(
-                "comments",
-                None,
-                AtlasFlags {
-                    audit: true,
-                    ..AtlasFlags::default()
-                }
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_invocation(
-                "module",
-                Some("src/lib.rs"),
-                AtlasFlags {
-                    items: true,
-                    graph: true,
-                    ..AtlasFlags::default()
-                }
-            )
-            .is_ok()
-        );
-
-        assert!(
-            validate_invocation(
-                "census",
-                None,
-                AtlasFlags {
-                    audit: true,
-                    ..AtlasFlags::default()
-                }
-            )
-            .expect_err("--audit is irrelevant")
-            .contains("does not accept --audit")
-        );
-        assert!(
-            validate_invocation(
-                "concentration",
-                None,
-                AtlasFlags {
-                    items: true,
-                    ..AtlasFlags::default()
-                }
-            )
-            .expect_err("--items is irrelevant")
-            .contains("does not accept --items")
-        );
-        assert!(
-            validate_invocation(
-                "comments",
-                None,
-                AtlasFlags {
-                    audit: true,
-                    graph: true,
-                    ..AtlasFlags::default()
-                }
-            )
-            .expect_err("--graph is irrelevant")
-            .contains("does not accept --graph")
-        );
-        assert!(
-            validate_invocation("dump", None, AtlasFlags::default())
-                .expect_err("dump requires JSON")
-                .contains("requires --json")
-        );
-        assert!(
-            validate_invocation("unknown", None, AtlasFlags::default())
-                .expect_err("unknown command")
-                .contains("unknown atlas verb")
-        );
-    }
-
-    #[test]
-    fn max_block_finds_the_god_impl_not_the_item_count() {
-        // One 8-line impl among many 1-line items: the max must pick the impl
-        // (the mean-based grade this replaced would have diluted it away).
-        let source = "\
-pub struct A;
-pub struct B;
-pub struct C;
-
-impl A {
-    fn one() {}
-    fn two() {}
-    fn three() {}
-    fn four() {}
-    fn five() {}
-    fn six() {}
-}
-
-pub fn tail() {}
-
-#[cfg(test)]
-mod tests {
-    fn giant_test_helper_that_must_not_win() {}
-}
-";
-        let file = fixture_file("crates/x/src/lib.rs", source);
-        let (span, item) = max_block(&file).expect("items exist");
-        assert_eq!(item.name, "A");
-        assert_eq!(item.kind, ItemKind::Impl);
-        // The impl body, plus the blank line before the next item.
-        assert!(span >= 8, "span {span} should cover the impl body");
-        // The block never reaches past the module's own production lines —
-        // the invariant a trailing test region used to break.
-        assert!(span <= file.nontest_loc());
-    }
-
-    fn init_git_fixture(root: &Path, relative: &str, contents: &str) {
-        let mut init = std::process::Command::new("git");
-        init.current_dir(root)
-            .args(["init", "--quiet", "--initial-branch=master"]);
-        fixture_command(init, "initialize Git fixture");
-
-        let path = root.join(relative);
-        fs::create_dir_all(path.parent().expect("fixture path has parent"))
-            .expect("create fixture source directory");
-        fs::write(&path, contents).expect("write fixture source");
-
-        let mut add = std::process::Command::new("git");
-        add.current_dir(root).args(["add", "."]);
-        fixture_command(add, "stage Git fixture");
-
-        let mut commit = std::process::Command::new("git");
-        commit.current_dir(root).args([
-            "-c",
-            "user.name=Atlas Sentinel",
-            "-c",
-            "user.email=atlas@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "-m",
-            "fixture",
-        ]);
-        fixture_command(commit, "commit Git fixture");
-    }
-
-    fn fixture_command(mut command: std::process::Command, context: &str) -> String {
-        let output = command
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_COMMON_DIR")
-            .env_remove("GIT_INDEX_FILE")
-            .output()
-            .expect("run fixture command");
-        assert!(
-            output.status.success(),
-            "{context}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).expect("fixture output is UTF-8")
-    }
-
-    #[test]
-    fn batch_framing_preserves_text_and_refuses_wrong_objects_and_frames() {
-        let request = vec![("source.rs".to_owned(), "oid".to_owned())];
-        for bytes in [
-            b"oid blob 1\n\xff\n".as_slice(),
-            b"oid commit 1\na\n",
-            b"oid tree 1\na\n",
-            b"oid blob 9\na\n",
-            b"oid blob 1\naX",
-            b"oid blob 1\na\nextra",
-            b"other blob 1\na\n",
-            b"oid blob no\na\n",
-            b"oid blob 1",
-            b"oid missing\n",
-        ] {
-            assert!(blob_answers(&request, bytes).is_err(), "{bytes:?}");
-        }
-        let requests = vec![
-            ("first.rs".to_owned(), "oid".to_owned()),
-            ("second.rs".to_owned(), "oid".to_owned()),
-        ];
-        let decoded = blob_answers(&requests, b"oid blob 3\na\n\n\noid blob 1\nb\n")
-            .expect("size-framed newlines");
-        assert_eq!(decoded["first.rs"], "a\n\n");
-        assert_eq!(decoded["second.rs"], "b");
-    }
-
-    #[test]
-    fn batched_revision_blobs_equal_single_reads_with_terminal_crlf() {
-        let root = tempfile::tempdir().expect("transport fixture");
-        let path = "src/a spaced.rs";
-        init_git_fixture(root.path(), path, "pub fn alpha() {}\r\n\n");
-        let git = git(root.path()).expect("validated fixture Git");
-        let oid =
-            String::from_utf8(git(&["rev-parse", &format!("HEAD:{path}")], None).expect("blob id"))
-                .expect("UTF-8 id");
-        let batch = read_blobs(&git, &[(path.to_owned(), oid.trim().to_owned())]).expect("batch");
-        assert_eq!(
-            batch[path].as_bytes(),
-            git(&["show", &format!("HEAD:{path}")], None).expect("single read")
-        );
-        assert_eq!(batch[path], "pub fn alpha() {}\r\n\n");
-        assert!(
-            read_blobs(&|_, _| panic!("empty request must not spawn"), &[])
-                .expect("empty batch")
-                .is_empty()
-        );
-        let missing = read_blobs(
-            &git,
-            &[(
-                "missing.rs".into(),
-                "0000000000000000000000000000000000000000".into(),
-            )],
-        )
-        .expect_err("missing refuses");
-        assert!(missing.contains("missing.rs"));
-        let tree = String::from_utf8(git(&["rev-parse", "HEAD:src"], None).expect("tree id"))
-            .expect("UTF-8 id");
-        assert!(read_blobs(&git, &[("src".into(), tree.trim().into())]).is_err());
-    }
-
-    #[test]
-    fn revision_batch_preserves_overlapping_members_and_exact_old_revision() {
-        let root = tempfile::tempdir().expect("member fixture");
-        init_git_fixture(root.path(), "x/src/lib.rs", "pub fn parent() {}\n");
-        init_git_fixture(
-            root.path(),
-            "x/src/nested/src/lib.rs",
-            "pub fn nested() {}\n",
-        );
-        fs::write(root.path().join("outside.rs"), [0xff]).expect("non-text nonmember");
-        init_git_fixture(root.path(), "control.txt", "first\n");
-        let workspace = Workspace {
-            root: root.path().to_owned(),
-            crates: vec![
-                CrateMap {
-                    name: "x".into(),
-                    src_rel: "x/src".into(),
-                    entry_points: Vec::new(),
-                    files: Vec::new(),
-                },
-                CrateMap {
-                    name: "nested".into(),
-                    src_rel: "x/src/nested/src".into(),
-                    entry_points: Vec::new(),
-                    files: Vec::new(),
-                },
-            ],
-        };
-        let old = workspace.at_ref("master").expect("nonmember not read");
-        assert_eq!(old.crates[0].files.len(), 2);
-        assert_eq!(old.crates[1].files.len(), 1);
-        for member in &old.crates {
-            assert!(
-                member
-                    .files
-                    .iter()
-                    .any(|file| file.rel == "x/src/nested/src/lib.rs"
-                        && file.production_items().any(|item| item.name == "nested"))
-            );
-        }
-        let git = git(root.path()).expect("fixture Git");
-        let baseline =
-            String::from_utf8(git(&["rev-parse", "master"], None).expect("exact old revision"))
-                .expect("UTF-8 id");
-        fs::write(root.path().join("x/src/lib.rs"), [0xff]).expect("non-text member");
-        init_git_fixture(root.path(), "control.txt", "second\n");
-        let error = workspace
-            .at_ref("master")
-            .err()
-            .expect("non-text member refuses");
-        assert!(
-            error.contains("Git batch source for x/src/lib.rs"),
-            "{error}"
-        );
-        assert!(
-            workspace.at_ref(baseline.trim()).is_ok(),
-            "exact old commit survives branch advance"
-        );
-    }
-
-    #[test]
-    fn test_files_resolve_through_the_rust_module_layout() {
-        // `session.rs` declares `#[cfg(test)] mod tests;`, and Rust puts that
-        // child in `session/` — not beside its parent. Resolving it in the
-        // parent's own directory left the workspace's largest test file
-        // (6,349 lines) counted as production.
-        assert_eq!(
-            child_directory("crates/murail-session/src/session.rs"),
-            "crates/murail-session/src/session"
-        );
-        assert_eq!(
-            child_directory("crates/murail-session/src/lib.rs"),
-            "crates/murail-session/src"
-        );
-        assert_eq!(
-            child_directory("crates/murail-session/src/session/mod.rs"),
-            "crates/murail-session/src/session"
-        );
-
-        let mut files = vec![
-            fixture_file(
-                "crates/x/src/session.rs",
-                "pub fn production() {}\n\n#[cfg(test)]\nmod tests;\n",
-            ),
-            fixture_file("crates/x/src/session/tests.rs", "fn a() {}\nfn b() {}\n"),
-        ];
-        mark_test_files(&mut files, &[]);
-        assert!(!files[0].test_file, "the parent is production");
-        assert!(files[1].test_file, "the declared child is all tests");
-        assert_eq!(files[1].nontest_loc(), 0);
-        assert_eq!(files[1].production_items().count(), 0);
-    }
-
-    #[test]
-    fn test_files_resolve_through_explicit_module_paths() {
-        let mut files = vec![
-            fixture_file(
-                "crates/x/src/lib.rs",
-                "#[cfg(test)]\n#[path = \"../tests/support/hash_equivalence.rs\"]\nmod hash_equivalence_tests;\n",
-            ),
-            fixture_file(
-                "crates/x/tests/support/hash_equivalence.rs",
-                "fn only_a_test() {}\n",
-            ),
-        ];
-        mark_test_files(&mut files, &[]);
-        assert!(files[1].test_file, "the explicit module path is all tests");
-        assert_eq!(files[1].nontest_loc(), 0);
-    }
-
-    #[test]
-    fn test_files_inherit_declared_path_mounted_ancestry() {
-        // Deliberately child-first: ancestry must not depend on scan order.
-        let mut files = vec![
-            fixture_file(
-                "crates/x/src/package/codegen_package/tests/exact_candidates.rs",
-                "pub fn only_a_test() {}\nmod deeper;\n",
-            ),
-            fixture_file(
-                "crates/x/src/package/codegen_package/tests/deeper.rs",
-                "pub fn nested_test() {}\n",
-            ),
-            fixture_file(
-                "crates/x/src/package/codegen_package/tests.rs",
-                "#[path = \"tests/exact_candidates.rs\"]\nmod exact_candidates;\n",
-            ),
-            fixture_file(
-                "crates/x/src/package/codegen_package/construction.rs",
-                "pub fn production() {}\n#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
-            ),
-            fixture_file(
-                "crates/x/src/package/codegen_package/tests/production.rs",
-                "pub fn not_declared_in_tests() {}\n",
-            ),
-        ];
-        mark_test_files(&mut files, &[]);
-        for file in &files[..3] {
-            assert!(file.test_file, "{} inherits the test boundary", file.rel);
-            assert_eq!(file.nontest_loc(), 0);
-            assert_eq!(file.nontest_loc(), 0);
-            assert_eq!(file.production_items().count(), 0);
-        }
-        assert!(!files[3].test_file);
-        assert!(!files[4].test_file, "directory spelling is not ancestry");
-        let production: Vec<_> = files
-            .iter()
-            .filter(|file| !file.test_file)
-            .map(|file| file.rel.as_str())
-            .collect();
-        assert_eq!(
-            production,
-            vec![
-                "crates/x/src/package/codegen_package/construction.rs",
-                "crates/x/src/package/codegen_package/tests/production.rs",
-            ]
-        );
-    }
-
-    #[test]
-    fn a_production_mount_keeps_shared_test_source_in_the_census() {
-        let mut files = vec![
-            fixture_file(
-                "crates/x/src/lib.rs",
-                "mod production;\n#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
-            ),
-            fixture_file(
-                "crates/x/src/tests.rs",
-                "#[path = \"production.rs\"]\nmod mirror;\n",
-            ),
-            fixture_file(
-                "crates/x/src/production.rs",
-                "pub fn live() {}\nmod child;\n",
-            ),
-            fixture_file(
-                "crates/x/src/production/child.rs",
-                "pub fn live_child() {}\n",
-            ),
-            fixture_file(
-                "crates/x/src/child.rs",
-                "pub fn only_in_explicit_test_mount() {}\n",
-            ),
-        ];
-        mark_test_files(&mut files, &[]);
-        assert!(files[1].test_file);
-        assert!(
-            files[4].test_file,
-            "the explicit test mount has its own child directory"
-        );
-        for index in [0, 2, 3] {
-            assert!(
-                !files[index].test_file,
-                "{} is live production",
-                files[index].rel
-            );
-            assert!(files[index].nontest_loc() > 0);
-        }
-    }
-
-    #[test]
-    fn cargo_entry_points_remain_production_when_mounted_by_tests() {
-        let mut files = vec![
-            fixture_file(
-                "crates/x/src/lib.rs",
-                "#[cfg(test)]\n#[path = \"tests.rs\"]\nmod tests;\n",
-            ),
-            fixture_file(
-                "crates/x/src/tests.rs",
-                "#[path = \"bin/custom.rs\"]\nmod mirror;\n#[path = \"bin/child.rs\"]\nmod shared_child;\n",
-            ),
-            fixture_file("crates/x/src/bin/custom.rs", "fn main() {}\nmod child;\n"),
-            fixture_file("crates/x/src/bin/child.rs", "pub fn live_child() {}\n"),
-        ];
-        mark_test_files(
-            &mut files,
-            &[
-                "crates/x/src/lib.rs".into(),
-                "crates/x/src/bin/custom.rs".into(),
-            ],
-        );
-        assert!(files[1].test_file);
-        for index in [0, 2, 3] {
-            assert!(
-                !files[index].test_file,
-                "{} is production through its Cargo target",
-                files[index].rel
-            );
-            assert!(files[index].nontest_loc() > 0);
-        }
-    }
-
-    #[test]
-    fn test_ancestry_terminates_on_declared_cycles() {
-        let mut files = vec![
-            fixture_file(
-                "src/lib.rs",
-                "#[cfg(test)]\n#[path = \"first.rs\"]\nmod tests;\n",
-            ),
-            fixture_file("src/first.rs", "#[path = \"second.rs\"]\nmod second;\n"),
-            fixture_file("src/second.rs", "#[path = \"first.rs\"]\nmod first;\n"),
-        ];
-        mark_test_files(&mut files, &["src/lib.rs".into()]);
-        assert!(!files[0].test_file);
-        assert!(files[1].test_file && files[2].test_file);
-    }
-
-    #[test]
-    fn explicit_test_paths_normalize_components_and_do_not_use_the_named_fallback() {
-        let mut files = vec![
-            fixture_file(
-                "crates/x/src/ranking.rs",
-                "#[path = \"./support/../ranking_benchmark.rs\"]\n#[cfg(test)]\nmod benchmark;\n",
-            ),
-            fixture_file("crates/x/src/ranking_benchmark.rs", "fn only_a_test() {}\n"),
-            fixture_file("crates/x/src/ranking/benchmark.rs", "fn production() {}\n"),
-        ];
-        mark_test_files(&mut files, &[]);
-        assert!(files[1].test_file);
-        assert!(!files[2].test_file);
-    }
-
-    #[test]
-    fn fan_edges_exclude_interleaved_tests_without_dropping_later_production() {
-        let consumer = "\
-use crate::before::Thing;
-
-#[cfg(test)]
-mod tests {
-    use crate::target::TestOnly;
-}
-
-use crate::target::Production;
-";
-        let test_only = "\
-#[cfg(test)]
-mod tests {
-    use crate::target::TestOnly;
-}
-";
-        let target = "pub struct Production;\n";
-        let crate_map = CrateMap {
-            name: "fixture".to_owned(),
-            src_rel: "crates/fixture/src".to_owned(),
-            entry_points: Vec::new(),
-            files: vec![
-                fixture_file("crates/fixture/src/consumer.rs", consumer),
-                fixture_file("crates/fixture/src/test_only.rs", test_only),
-                fixture_file("crates/fixture/src/target.rs", target),
-            ],
-        };
-
-        assert_eq!(fan_out(&crate_map.files[0]), (2, 2));
-        assert_eq!(
-            fan_in(&crate_map, &crate_map.files[2]),
-            Some(vec!["crates/fixture/src/consumer.rs"])
-        );
-    }
-
-    #[test]
-    fn a_block_never_measures_wider_than_its_module() {
-        // Production, then a test module the line grammar records no item
-        // for: the block must stop at the region, not run to end of file.
-        let source = "\
-pub fn only_production() {
-    let _ = 1;
-}
-
-#[cfg(test)]
-mod tests {
-    fn a() {}
-    fn b() {}
-    fn c() {}
-    fn d() {}
-}
-";
-        let file = fixture_file("crates/x/src/lib.rs", source);
-        let (span, _) = max_block(&file).expect("items exist");
-        assert!(
-            span <= file.nontest_loc(),
-            "block {span} exceeded the module's {} production lines",
-            file.nontest_loc()
-        );
-    }
-
-    fn fixture_file(rel: &str, text: &str) -> FileMap {
-        FileMap::of(rel.to_owned(), text.to_owned())
-    }
-
-    fn fixture_workspace() -> Workspace {
-        let admit = "\
-//! Admission for fixture tiles — realization kernel §5.
-
-use crate::grade::Cost;
-use std::fmt;
-
-/// An admitted fixture tile.
-pub struct Tile {
-    cost: Cost,
-}
-
-/// Refusal for the tile family.
-pub(crate) enum Refusal {
-    CrossLane,
-}
-
-pub fn admit(cost: Cost) -> Tile {
-    Tile { cost }
-}
-
-fn private_helper() {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}
-";
-        let grade = "\
-pub struct Cost;
-
-pub use self::Cost as PublicCost;
-
-macro_rules! grade_table {
-    () => {};
-}
-";
-        let lib = "\
-//! Fixture crate root.
-
-pub mod admit;
-pub mod grade;
-
-pub use crate::admit::Tile;
-";
-        Workspace {
-            root: PathBuf::from("/fixture"),
-            crates: vec![CrateMap {
-                name: "murail-fix".to_owned(),
-                src_rel: "crates/murail-fix/src".to_owned(),
-                entry_points: Vec::new(),
-                files: vec![
-                    fixture_file("crates/murail-fix/src/admit.rs", admit),
-                    fixture_file("crates/murail-fix/src/grade.rs", grade),
-                    fixture_file("crates/murail-fix/src/lib.rs", lib),
-                ],
-            }],
-        }
-    }
-
-    const PUBISH: Filter = Filter {
-        pub_only: false,
-        include_private: false,
-    };
-    const ALL: Filter = Filter {
-        pub_only: false,
-        include_private: true,
-    };
-
-    #[test]
-    fn census_workspace_rung_is_the_per_crate_golden() {
-        let ws = fixture_workspace();
-        let graph = build_graph(&ws, PUBISH);
-        let output = census(&ws, None, &graph, PUBISH, false).expect("census renders");
-        let expected = "\
-atlas census — workspace (per crate) · population: pub-ish · loc: non-test
-crate       types  fns  alias  macro  loc  doc%
-murail-fix      3    1      2      1   34   50%
-TOTAL           3    1      2      1   34   50%";
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn census_crate_rung_lists_modules_and_pub_only_narrows() {
-        let ws = fixture_workspace();
-        let graph = build_graph(&ws, PUBISH);
-        let output =
-            census(&ws, Some("murail-fix"), &graph, PUBISH, false).expect("census renders");
-        let expected = "\
-atlas census — murail-fix (per module under crates/murail-fix/src/) · population: pub-ish · loc: non-test
-module    types  fns  alias  macro  loc  doc%
-admit.rs      2    1      0      0   21   66%
-grade.rs      1    0      1      1    7    0%
-lib.rs        0    0      1      0    6     -
-TOTAL         3    1      2      1   34   50%";
-        assert_eq!(output, expected);
-
-        let narrowed = census(
-            &ws,
-            Some("murail-fix"),
-            &graph,
-            Filter {
-                pub_only: true,
-                include_private: false,
+fn dump(
+    navigation: &Navigation<'_>,
+    snapshot: &atlas_core::discovery::Snapshot,
+    filter: Filter,
+) -> Result<String> {
+    let report = navigation.dump().map_err(|e| e.to_string())?;
+    let ids: BTreeMap<_, _> = report
+        .declarations
+        .iter()
+        .map(|d| (d.id.as_str(), site_id(&d.site)))
+        .collect();
+    let mut items: Vec<_> = report
+        .declarations
+        .iter()
+        .map(|d| DumpItem {
+            id: site_id(&d.site),
+            name: d.site.name.clone(),
+            kind: kind_label(d.site.kind),
+            home: d.home.clone(),
+            file: d.site.file.clone(),
+            line: d.site.line,
+            vis: dump_visibility_label(d.site.visibility),
+            r#pub: d.site.visibility == Visibility::Pub,
+        })
+        .collect();
+    let mut edges: Vec<_> = presentation_edges(&report.edges)
+        .into_iter()
+        .map(|edge| DumpEdge {
+            source_id: Some(item_id(
+                &edge.source_file,
+                edge.source_line,
+                &edge.source_name,
+            )),
+            source: edge.source_name,
+            source_path: None,
+            target_id: edge
+                .target_file
+                .as_ref()
+                .zip(edge.target_line)
+                .map(|(file, line)| item_id(file, line, &edge.target)),
+            target: edge.target,
+            target_file: edge.target_file,
+            ambiguous: edge.ambiguous,
+            unresolved: false,
+            kind: match edge.class {
+                EdgeClass::Consumes => "consumes",
+                EdgeClass::Produces => "produces",
+                EdgeClass::Composes => "composed-of",
             },
-            false,
-        )
-        .expect("census renders");
-        // Refusal is pub(crate): the pub-only population drops it.
-        assert!(narrowed.contains("admit.rs      1    1"));
-    }
-
-    #[test]
-    fn dump_serializes_the_existing_item_and_edge_authorities() {
-        let ws = fixture_workspace();
-        let graph = build_graph(&ws, ALL);
-        let output = dump(&ws, &graph, ALL).expect("dump renders");
-        let value: serde_json::Value = serde_json::from_str(&output).expect("dump is valid JSON");
-
-        assert_eq!(value["verb"], "dump");
-        assert_eq!(value["population"], "all");
-        let items = value["items"].as_array().expect("items is an array");
-        let refusal = items
-            .iter()
-            .find(|item| item["name"] == "Refusal")
-            .expect("pub(crate) item is in the pub-ish dump");
-        assert_eq!(refusal["kind"], "enum");
-        assert_eq!(refusal["home"], "murail-fix::admit");
-        assert_eq!(refusal["vis"], "crate");
-        assert_eq!(refusal["pub"], false);
-        assert_eq!(refusal["id"], "crates/murail-fix/src/admit.rs:12:Refusal");
-        let private_helper = items
-            .iter()
-            .find(|item| item["name"] == "private_helper")
-            .expect("the complete dump includes private declarations");
-        assert_eq!(private_helper["vis"], "private");
-        assert_eq!(private_helper["pub"], false);
-
-        let edges = value["edges"].as_array().expect("edges is an array");
-        let has_edge = |source: &str, kind: &str, target: &str| {
-            edges.iter().any(|edge| {
-                edge["source"] == source && edge["kind"] == kind && edge["target"] == target
-            })
+            file: edge.source_file,
+            line: edge.source_line,
+        })
+        .collect();
+    for export in report.exports {
+        let target_id = item_id(&export.site.file, export.site.line, &export.local_name);
+        let home = display_home(snapshot, &export.site)?;
+        items.push(DumpItem {
+            id: target_id.clone(),
+            name: export.local_name.clone(),
+            kind: "re-export",
+            home,
+            file: export.site.file.clone(),
+            line: export.site.line,
+            vis: dump_visibility_label(export.site.visibility),
+            r#pub: export.site.visibility == Visibility::Pub,
+        });
+        let source_id = match &export.target {
+            Resolution::Unique(id) => {
+                Some(ids.get(id.as_str()).ok_or("export target absent")?.clone())
+            }
+            _ => None,
         };
-        assert!(has_edge("admit", "consumes", "Cost"));
-        assert!(has_edge("admit", "produces", "Tile"));
-        assert!(has_edge("Tile", "composed-of", "Cost"));
-        assert!(has_edge("Tile", "facade", "Tile"));
-        assert!(has_edge("Cost", "re-exports", "PublicCost"));
-        let tile_facade = edges
-            .iter()
-            .find(|edge| edge["source"] == "Tile" && edge["kind"] == "facade")
-            .expect("fixture root exposes Tile through its facade");
-        assert!(tile_facade["source_id"].is_string());
-        assert_eq!(tile_facade["ambiguous"], false);
-        assert_eq!(tile_facade["unresolved"], false);
-        assert!(edges.iter().all(|edge| edge.get("source_path").is_some()
-            && edge.get("source_id").is_some()
-            && edge.get("target_id").is_some()
-            && edge.get("ambiguous").is_some()
-            && edge.get("unresolved").is_some()));
-
-        let narrowed = dump(
-            &ws,
-            &build_graph(
-                &ws,
-                Filter {
-                    pub_only: true,
-                    include_private: false,
-                },
-            ),
-            Filter {
-                pub_only: true,
-                include_private: false,
+        edges.push(DumpEdge {
+            source: export.source_name,
+            source_path: Some(export.source_path),
+            source_id,
+            target: export.local_name,
+            target_id: Some(target_id),
+            target_file: Some(export.site.file.clone()),
+            ambiguous: matches!(export.target, Resolution::Ambiguous(_)),
+            unresolved: matches!(export.target, Resolution::Unresolved(_)),
+            kind: match export.kind {
+                nav::ExportKind::Facade => "facade",
+                nav::ExportKind::Reexport => "re-exports",
             },
-        )
-        .expect("pub-only dump renders");
-        let narrowed: serde_json::Value =
-            serde_json::from_str(&narrowed).expect("pub-only dump is valid JSON");
-        assert!(
-            narrowed["items"]
-                .as_array()
-                .expect("items is an array")
-                .iter()
-                .all(|item| item["name"] != "Refusal")
-        );
+            file: export.site.file,
+            line: export.site.line,
+        });
     }
-
-    #[test]
-    fn public_root_reexports_are_the_only_facade_edges() {
-        assert_eq!(reexport_edge_kind(Visibility::Pub, true), "facade");
-        assert_eq!(reexport_edge_kind(Visibility::PubCrate, true), "re-exports");
-    }
-
-    #[test]
-    fn name_card_shows_facade_edges_and_doc_gap() {
-        let ws = fixture_workspace();
-        let graph = build_graph(&ws, PUBISH);
-        let output = name_card(&ws, "Tile", &graph, PUBISH, false).expect("name renders");
-        let expected = "\
-atlas name — Tile · 1 match(es) (pub-ish population) · ~3 refs (approximate, textual)
-reexports: crates/murail-fix/src/lib.rs:6
-produced-by (1): admit crates/murail-fix/src/admit.rs:16
-consumed-by: (none)
-composes: (none)
-composed-of (1): Cost
-crates/murail-fix/src/admit.rs:7  struct  pub
-    /// An admitted fixture tile.";
-        assert_eq!(output, expected);
-
-        // An undocumented fn renders its gap and its outgoing signature edges.
-        let undocumented = name_card(&ws, "admit", &graph, PUBISH, false).expect("name renders");
-        assert!(undocumented.contains("/// (MISSING — no doc comment)"));
-        assert!(undocumented.contains("consumes (1): Cost"));
-        assert!(undocumented.contains("produces (1): Tile"));
-
-        // A component type's card shows who composes it and who consumes it.
-        let cost = name_card(&ws, "grade::Cost", &graph, PUBISH, false).expect("name renders");
-        assert!(cost.contains("crates/murail-fix/src/grade.rs:1"));
-        assert!(cost.contains("consumed-by (1): admit crates/murail-fix/src/admit.rs:16"));
-        assert!(cost.contains("composes (1): Tile crates/murail-fix/src/admit.rs:7"));
-    }
-
-    #[test]
-    fn module_card_shows_header_items_orphans_and_graph() {
-        let ws = fixture_workspace();
-        let graph = build_graph(&ws, PUBISH);
-        let output = module_card(
-            &ws,
-            "crates/murail-fix/src/admit.rs",
-            &graph,
-            PUBISH,
-            true,
-            true,
-            false,
-        )
-        .expect("module renders");
-        let expected = "\
-atlas module — crates/murail-fix/src/admit.rs (murail-fix)
-//! Admission for fixture tiles — realization kernel §5.
-nontest-loc: 21 · census (pub-ish): 2 types, 1 fns, 0 aliases, 0 macros · undocumented pub-ish: 1
-fan-out: 2 use-imports (1 crate-internal) · fan-in: 1 files: crates/murail-fix/src/lib.rs [heuristic use-edges]
-orphans (1): Refusal [census types no other declaration mentions]
-graph: 3 edges (declaration-level co-mentions)
-  7 Tile -composes-> Cost (crates/murail-fix/src/grade.rs)
-  16 admit -consumes-> Cost (crates/murail-fix/src/grade.rs)
-  16 admit -produces-> Tile
-items:
-line  kind    vis         name            doc
-7     struct  pub         Tile            /// An admitted fixture tile.
-12    enum    pub(crate)  Refusal         /// Refusal for the tile family.
-16    fn      pub         admit           (MISSING ///)
-20    fn      private     private_helper  (MISSING ///)";
-        assert_eq!(output, expected);
-
-        // A header-less module shows the gap, visibly; without --graph the
-        // edge list stays off the card.
-        let bare = module_card(
-            &ws,
-            "crates/murail-fix/src/grade.rs",
-            &graph,
-            PUBISH,
-            true,
-            false,
-            false,
-        )
-        .expect("module renders");
-        assert!(bare.contains("//! MISSING — no module header"));
-        assert!(bare.contains("orphans: 0"));
-        assert!(!bare.contains("graph:"));
-    }
-
-    #[test]
-    fn edges_classify_params_returns_and_fields() {
-        let ws = fixture_workspace();
-        let graph = build_graph(&ws, PUBISH);
-        let mut short: Vec<String> = graph
-            .edges
-            .iter()
-            .map(|edge| {
-                format!(
-                    "{} -{}-> {}",
-                    edge.source_name,
-                    class_label(edge.class),
-                    edge.target
-                )
-            })
-            .collect();
-        short.sort();
-        assert_eq!(
-            short,
-            vec![
-                "Tile -composes-> Cost",
-                "admit -consumes-> Cost",
-                "admit -produces-> Tile",
-            ]
-        );
-        // Refusal is mentioned by no other declaration block: the orphan
-        // strip carries it, per module.
-        assert_eq!(
-            graph.orphans.get("crates/murail-fix/src/admit.rs"),
-            Some(&vec!["Refusal".to_owned()])
-        );
-        assert_eq!(graph.orphans.get("crates/murail-fix/src/grade.rs"), None);
-    }
-
-    #[test]
-    fn edge_resolution_prefers_same_crate_and_marks_cross_crate_duplicates() {
-        let shared_a = "pub struct Shared;\n";
-        let shared_b = "\
-pub struct Shared;
-
-pub fn use_shared(x: Shared) -> Shared {
-    x
+    items.sort_by(|a, b| {
+        (&a.file, a.line, &a.name, a.kind).cmp(&(&b.file, b.line, &b.name, b.kind))
+    });
+    edges.sort_by(|a, b| {
+        (&a.file, a.line, &a.source, a.kind, &a.target)
+            .cmp(&(&b.file, b.line, &b.source, b.kind, &b.target))
+    });
+    let value = Dump {
+        verb: "dump",
+        population: filter.label(),
+        items,
+        edges,
+    };
+    let mut bytes = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(b"");
+    value
+        .serialize(&mut serde_json::Serializer::with_formatter(
+            &mut bytes, formatter,
+        ))
+        .map_err(|e| format!("serialize atlas dump: {e}"))?;
+    String::from_utf8(bytes).map_err(|e| format!("encode atlas dump as UTF-8: {e}"))
 }
-";
-        let probe_c = "pub fn probe(x: Shared) {}\n";
-        let single_crate = |name: &str, text: &str| CrateMap {
-            name: name.to_owned(),
-            src_rel: format!("crates/{name}/src"),
-            entry_points: Vec::new(),
-            files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
-        };
-        let ws = Workspace {
-            root: PathBuf::from("/fixture"),
-            crates: vec![
-                single_crate("fix-a", shared_a),
-                single_crate("fix-b", shared_b),
-                single_crate("fix-c", probe_c),
-            ],
-        };
-        let graph = build_graph(&ws, PUBISH);
-
-        // fix-b declares its own Shared: both edges resolve there.
-        let from_b: Vec<&Edge> = graph
-            .edges
-            .iter()
-            .filter(|edge| edge.source_name == "use_shared")
-            .collect();
-        assert_eq!(from_b.len(), 2);
-        assert!(from_b.iter().all(|edge| {
-            !edge.ambiguous && edge.target_file.as_deref() == Some("crates/fix-b/src/lib.rs")
-        }));
-
-        // fix-c has no local Shared and two cross-crate candidates: the
-        // textual match cannot pick one, so the edge is marked ambiguous.
-        let from_c: Vec<&Edge> = graph
-            .edges
-            .iter()
-            .filter(|edge| edge.source_name == "probe")
-            .collect();
-        assert_eq!(from_c.len(), 1);
-        assert!(from_c[0].ambiguous && from_c[0].target_file.is_none());
+const fn dump_visibility_label(visibility: Visibility) -> &'static str {
+    match visibility {
+        Visibility::Pub => "pub",
+        Visibility::PubCrate | Visibility::PubIn => "crate",
+        Visibility::PubSuper => "super",
+        Visibility::Private => "private",
     }
-
-    #[test]
-    fn external_import_cannot_resolve_to_a_same_named_workspace_type() {
-        let workspace_value = "pub struct Value;\npub struct Tile;\n";
-        let external_value = "\
-use serde_json::Value;
-
-pub fn encode(_: Tile) -> Value {
-    todo!()
 }
-";
-        let workspace_crate = |name: &str, text: &str| CrateMap {
-            name: name.to_owned(),
-            src_rel: format!("crates/{name}/src"),
-            entry_points: Vec::new(),
-            files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
-        };
-        let ws = Workspace {
-            root: PathBuf::from("/fixture"),
-            crates: vec![
-                workspace_crate("workspace-value", workspace_value),
-                workspace_crate("external-user", external_value),
-            ],
-        };
-        let graph = build_graph(&ws, PUBISH);
 
-        assert!(
-            graph
-                .edges
-                .iter()
-                .filter(|edge| edge.source_name == "encode")
-                .all(|edge| edge.target != "Value"),
-            "an external import must suppress its same-named workspace candidate"
-        );
-        assert!(
-            graph
-                .edges
-                .iter()
-                .any(|edge| edge.source_name == "encode" && edge.target == "Tile"),
-            "external binding suppression must preserve unrelated workspace edges"
-        );
-    }
+#[cfg(test)]
+mod tests;
 
-    #[test]
-    fn external_import_bindings_report_only_names_introduced_into_scope() {
-        let bindings = |import| {
-            let mut bindings = ExternalImportBindings {
-                names: BTreeSet::new(),
-                has_glob: false,
-            };
-            bindings.absorb_import(import);
-            bindings
-        };
-        assert_eq!(
-            bindings("serde_json::value::Value").names,
-            BTreeSet::from(["Value".to_owned()])
-        );
-        assert_eq!(
-            bindings("serde_json::{Map, Value as JsonValue}").names,
-            BTreeSet::from(["JsonValue".to_owned(), "Map".to_owned()])
-        );
-        assert_eq!(
-            bindings("serde_json::{self, Value}").names,
-            BTreeSet::from(["Value".to_owned(), "serde_json".to_owned()])
-        );
-        assert!(bindings("serde_json::*").has_glob);
-    }
-
-    #[test]
-    fn import_text_inside_comments_and_strings_cannot_suppress_graph_edges() {
-        let workspace_value = "pub struct Value;\n";
-        let user = r##"
-/*
-use external::Value;
-*/
-const SOURCE: &str = r#"
-use external::Value;
-"#;
-
-pub fn encode() -> Value {
-    todo!()
-}
-"##;
-        let workspace_crate = |name: &str, text: &str| CrateMap {
-            name: name.to_owned(),
-            src_rel: format!("crates/{name}/src"),
-            entry_points: Vec::new(),
-            files: vec![fixture_file(&format!("crates/{name}/src/lib.rs"), text)],
-        };
-        let ws = Workspace {
-            root: PathBuf::from("/fixture"),
-            crates: vec![
-                workspace_crate("workspace-value", workspace_value),
-                workspace_crate("user", user),
-            ],
-        };
-        let graph = build_graph(&ws, PUBISH);
-        assert!(
-            graph
-                .edges
-                .iter()
-                .any(|edge| edge.source_name == "encode" && edge.target == "Value")
-        );
-    }
-
-    #[test]
-    fn signature_split_ignores_arrows_inside_bounds() {
-        let (params, ret) =
-            split_signature("pub fn map<F: Fn(Tile) -> Cost>(f: F, x: Tile) -> Grade {");
-        assert!(params.contains("x: Tile"));
-        assert!(!params.contains("Grade"));
-        assert!(ret.contains("Grade"));
-        // No return type: everything is the parameter side.
-        let (params, ret) = split_signature("pub fn tick(&mut self, frame: Frame) {");
-        assert!(params.contains("Frame"));
-        assert_eq!(ret.len(), 0);
-    }
-
-    #[test]
-    fn comments_audit_totals_the_policy_gaps() {
-        let output = comments_audit(&fixture_workspace(), PUBISH, false).expect("audit renders");
-        // grade.rs misses its header; lib.rs has one citing nothing; the
-        // pub-ish census population is 4 items of which 2 lack `///`.
-        let expected_tail = "\
-crate       files  no-//!  uncited-//!  items  no-///
-murail-fix      3       1            1      4       2
-TOTAL           3       1            1      4       2";
-        assert!(
-            output.ends_with(expected_tail),
-            "audit output was:\n{output}"
-        );
-    }
-
-    #[test]
-    fn word_occurrences_respect_identifier_boundaries() {
-        assert_eq!(
-            count_word_occurrences("Tile, LaneTile, Tile::new", "Tile"),
-            2
-        );
-        assert_eq!(count_word_occurrences("TileSet Tile_x", "Tile"), 0);
-        assert_eq!(count_word_occurrences("(Tile)", "Tile"), 1);
-    }
-
-    #[test]
-    fn citation_heuristic_recognizes_runtime_and_spec_mentions() {
-        assert!(cites("Implements CR-D104."));
-        assert!(cites("See `.design/implementation/specs/x.md`."));
-        assert!(cites("Runtime §5 admission."));
-        assert!(!cites("Recognition and admission for tiles."));
-    }
-
-    #[test]
-    fn module_paths_derive_from_src_relative_files() {
-        assert_eq!(
-            module_path_of("crates/x/src", "crates/x/src/a/b.rs").as_deref(),
-            Some("a::b")
-        );
-        assert_eq!(
-            module_path_of("crates/x/src", "crates/x/src/a/mod.rs").as_deref(),
-            Some("a")
-        );
-        assert_eq!(module_path_of("crates/x/src", "crates/x/src/lib.rs"), None);
-    }
+fn display_home(snapshot: &atlas_core::discovery::Snapshot, site: &Site) -> Result<String> {
+    let package = snapshot
+        .metadata()
+        .workspace_packages()
+        .into_iter()
+        .find(|package| package.name == site.package)
+        .ok_or("export package absent")?;
+    let src = package
+        .manifest_path
+        .parent()
+        .ok_or("manifest without parent")?
+        .join("src");
+    let src = src
+        .strip_prefix(&snapshot.metadata().workspace_root)
+        .map_err(|e| e.to_string())?;
+    let path = site
+        .file
+        .strip_prefix(&format!("{src}/"))
+        .ok_or("export outside source tree")?;
+    let stem = path
+        .strip_suffix(".rs")
+        .ok_or("export source is not Rust")?;
+    Ok(format!(
+        "{}::{}",
+        site.package,
+        stem.strip_suffix("/mod").unwrap_or(stem).replace('/', "::")
+    ))
 }

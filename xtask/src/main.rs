@@ -7,7 +7,6 @@
 )]
 
 mod atlas;
-mod scan;
 
 use std::{env, process};
 
@@ -22,7 +21,15 @@ fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("atlas") => atlas::run(args),
-        Some("nontest-loc") => scan::nontest_loc(args),
+        Some("nontest-loc") => {
+            let (Some(path), None) = (args.next(), args.next()) else {
+                return Err("usage: cargo xtask nontest-loc <FILE>".to_owned());
+            };
+            let text =
+                std::fs::read_to_string(&path).map_err(|err| format!("read {path}: {err}"))?;
+            println!("{}", atlas_core::source::non_test_loc(&text));
+            Ok(())
+        }
         Some("-h" | "--help") | None => {
             print_help();
             Ok(())

@@ -116,3 +116,33 @@ Nix source builds; private historical receipts/PII must not be published.
 Repository layout and privacy publication are decided on `girard-xqe.6` before
 adding the dependency. No changed runtime, storage format or corpus semantics is
 part of this cutover.
+
+## 2026-10-30 amendment: accepted grammar and context differences
+
+Before wrapper comparison results, Anneal's coordinator accepted two changes
+(`1030T071256-1a45`). Shared navigation recognizes unions, which the native
+scanner omitted; their counts are used directly. Physical shape reports prefer
+a production observation of a shared path rather than the native last package
+in name order. Navigation still preserves both package contexts. Controlled
+fixtures cover a union and a source file included under `cfg(test)` in one
+package while serving as another package's production target. All remaining
+behavior keeps the ledger's exact-match or explicit-disposition requirement.
+
+## 2026-10-30 amendment: comments are not declaration relationships
+
+After the first 40-case comparison, the coordinator accepted removal of 12
+ordinary co-mention edges whose only evidence was comment prose
+(`1030T074728-f003`). Shared lexical projection masks comments and strings;
+the native struct-block walk did not. A controlled fixture names the same type
+in an outer doc comment, a line comment, a string literal and a real field:
+only the field produces an edge. The ledger retains the exact 12-record list.
+
+## 2026-10-30 capture diagnostics disposition
+
+After wrapper inspection, the coordinator accepted shared capture diagnostics on
+stderr (`1030T224051-e05d`), with unchanged legacy stdout and exit behavior,
+deterministic ordering/prefix/source witnesses, a controlled symlink exclusion
+fixture, and the current/historical diagnostic populations in the freeze. This
+does not broaden native source counts or weaken required-input refusals. The
+[qualification record](2026-10-30-atlas-cutover-qualification.md) maps preserved
+regression claims and identifies executed verification separately from acceptance.

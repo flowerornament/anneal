@@ -29,6 +29,7 @@ items_after_statements = "allow"
 struct_excessive_bools = "allow"
 
 [dependencies]
+atlas-core = { git = "https://github.com/flowerornament/atlas", rev = "513aebb3d521b9a0785813bb3a55213c44bb4077", version = "0.1.1" }
 cargo_metadata = "0.23.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
