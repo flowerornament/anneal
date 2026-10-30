@@ -141,7 +141,7 @@ fn jj_workspace_projects_repository_capabilities_and_teaches_missing_evidence() 
     else {
         panic!("history query should emit rows");
     };
-    assert!(rows.is_empty());
+    assert_eq!(rows.len(), 0);
     assert_eq!(
         zero_result_hint.as_deref(),
         Some(

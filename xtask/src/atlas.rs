@@ -3534,7 +3534,7 @@ pub fn encode() -> Value {
         // No return type: everything is the parameter side.
         let (params, ret) = split_signature("pub fn tick(&mut self, frame: Frame) {");
         assert!(params.contains("Frame"));
-        assert!(ret.is_empty());
+        assert_eq!(ret.len(), 0);
     }
 
     #[test]

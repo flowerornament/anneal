@@ -1187,7 +1187,7 @@ mod tests {
         let body = "```\nlib/example/admission.rs:142-167\n```\n";
         let (result, _refs) = cmark_scan(body);
 
-        assert!(result.code_refs.is_empty());
+        assert_eq!(result.code_refs.len(), 0);
     }
 
     #[test]
@@ -1195,7 +1195,7 @@ mod tests {
         let body = "Example placeholder: `lib/example/...file.ex`.\n";
         let (result, _refs) = cmark_scan(body);
 
-        assert!(result.code_refs.is_empty());
+        assert_eq!(result.code_refs.len(), 0);
     }
 
     #[test]
@@ -1203,7 +1203,7 @@ mod tests {
         let body = "External URL: https://example.com/src/main.rs for background.\n";
         let (result, _refs) = cmark_scan(body);
 
-        assert!(result.code_refs.is_empty());
+        assert_eq!(result.code_refs.len(), 0);
     }
 
     #[test]

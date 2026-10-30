@@ -1529,8 +1529,8 @@ mod tests {
         let program =
             parse_program("inline", r"? order(h). ? foo(h), order(x).").expect("program parses");
         let queries = program.queries().collect::<Vec<_>>();
-        assert!(queries[0].ordering.is_empty());
-        assert!(queries[1].ordering.is_empty());
+        assert_eq!(queries[0].ordering.len(), 0);
+        assert_eq!(queries[1].ordering.len(), 0);
         assert_eq!(queries[0].body.atoms.len(), 1);
         assert_eq!(queries[1].body.atoms.len(), 2);
     }

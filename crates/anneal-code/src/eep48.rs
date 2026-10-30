@@ -414,8 +414,8 @@ pub(super) fn eep48_doc(term: &EetfTerm) -> Eep48Doc {
         EetfTerm::Map(map) => {
             let text = map
                 .map
-                .iter()
-                .filter_map(|(_, value)| term_string(value))
+                .values()
+                .filter_map(term_string)
                 .collect::<Vec<_>>()
                 .join("\n\n");
             if text.is_empty() {

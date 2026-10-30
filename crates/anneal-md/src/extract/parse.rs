@@ -2217,7 +2217,7 @@ mod tests {
     fn exclude_glob_patterns_build_glob_set() {
         let entries = vec!["**/README.md".to_string(), "docs/*.txt".to_string()];
         let (dirs, globs) = build_exclude_sets(&entries);
-        assert!(dirs.is_empty());
+        assert_eq!(dirs.len(), 0);
         let gs = globs.expect("should produce a GlobSet");
         assert!(gs.is_match("README.md"));
         assert!(gs.is_match("sub/README.md"));

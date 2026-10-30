@@ -1091,7 +1091,7 @@ fn real_colocated_jj_desk_uses_its_own_git_provider_and_head() {
         "-e",
         "? *edge{to: \"next.md\", assertion_date: date, assertion_revision: revision}.",
     ]));
-    assert!(!edges.is_empty());
+    assert_ne!(edges.len(), 0);
     assert!(
         edges
             .iter()
@@ -1221,7 +1221,7 @@ fn real_jj_desk_uses_own_pin_mount_origins_and_ignore_rules_with_null_provenance
         "-e",
         "? *edge{assertion_date: date, assertion_revision: revision}.",
     ]));
-    assert!(!edges.is_empty());
+    assert_ne!(edges.len(), 0);
     assert!(
         edges
             .iter()
@@ -1454,7 +1454,10 @@ fn diagnostic_suppression_matches_only_code_and_exact_subject() {
         "anneal.dl",
         r#"config suppress { rule("E001", "a.md"). rule("E001", "b.md"). }"#,
     );
-    assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
+    assert_eq!(
+        json_rows(&run(&["--root", root, "--json", "-e", query])).len(),
+        0
+    );
     assert_success(&run(&["--root", root, "check"]));
     assert_eq!(
         json_rows(&run(&[
@@ -1502,7 +1505,7 @@ fn aggregate_diagnostic_suppression_uses_subject_not_file_location() {
     );
     let query = r#"? diagnostic("W005", severity, subject, file, line, evidence)."#;
     let baseline = json_rows(&run(&["--root", root, "--json", "-e", query]));
-    assert!(!baseline.is_empty());
+    assert_ne!(baseline.len(), 0);
     assert!(
         baseline
             .iter()
@@ -1522,7 +1525,10 @@ fn aggregate_diagnostic_suppression_uses_subject_not_file_location() {
         "anneal.dl",
         r#"config suppress { rule("W005", "unmapped-test-status"). }"#,
     );
-    assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
+    assert_eq!(
+        json_rows(&run(&["--root", root, "--json", "-e", query])).len(),
+        0
+    );
     let card = run(&["--root", root, "describe", "suppress"]);
     assert_success(&card);
     assert!(text(&card.stdout).contains("subject identity exactly"));
@@ -1567,7 +1573,10 @@ fn label_diagnostic_suppression_does_not_match_its_file_location() {
         "anneal.dl",
         &format!(r#"{handles} config suppress {{ rule("E002", "OQ-1"). }}"#),
     );
-    assert!(json_rows(&run(&["--root", root, "--json", "-e", query])).is_empty());
+    assert_eq!(
+        json_rows(&run(&["--root", root, "--json", "-e", query])).len(),
+        0
+    );
     assert_success(&run(&["--root", root, "check"]));
 }
 
@@ -1753,7 +1762,7 @@ fn project_diagnostic_policy_composes_with_builtins_and_cards() {
     write_file(corpus.path(), "a.md", "---\nstatus: unknown\n---\n# A\n");
     let query = "? diagnostic(code, severity, subject, file, line, evidence).";
     let builtin = json_rows(&run(&["--root", root, "--json", "-e", query]));
-    assert!(!builtin.is_empty());
+    assert_ne!(builtin.len(), 0);
     for (declared, effective) in [
         ("info", "warning"),
         ("info", "error"),
@@ -1867,7 +1876,7 @@ project_diagnostic(code, severity, "a.md", null, null, null) := input(code, seve
             .all(|origin| origin.contains("anneal.dl:6:") || origin.contains("anneal.dl:7:"))
     );
     assert_eq!(run(&["--root", root, "check"]).status.code(), Some(1));
-    assert!(
+    assert_eq!(
         json_rows(&run(&[
             "--root",
             root,
@@ -1875,7 +1884,8 @@ project_diagnostic(code, severity, "a.md", null, null, null) := input(code, seve
             "-e",
             r#"? diagnostic("P001", severity, subject, file, line, evidence)."#
         ]))
-        .is_empty()
+        .len(),
+        0
     );
 }
 
@@ -1904,7 +1914,7 @@ fn project_diagnostic_declarations_and_internal_relations_are_guarded() {
         write_file(corpus.path(), "anneal.dl", &rules);
         let result = run(&["--root", root, "check"]);
         assert!(!result.status.success(), "accepted {rules}");
-        assert!(!text(&result.stderr).is_empty());
+        assert_ne!(text(&result.stderr).len(), 0);
     }
     // Literal P codes without a declaration are emitted contract errors, not dropped.
     write_file(
@@ -2009,7 +2019,7 @@ fn project_diagnostic_imports_empty_populations_and_refused_grades() {
     let import = "import library from \"library.dl\".";
     write_file(corpus.path(), "anneal.dl", import);
     assert_success(&run(&["--root", root, "check"]));
-    assert!(
+    assert_eq!(
         json_rows(&run(&[
             "--root",
             root,
@@ -2017,7 +2027,8 @@ fn project_diagnostic_imports_empty_populations_and_refused_grades() {
             "-e",
             r#"? diagnostic("P001", severity, subject, file, line, evidence)."#
         ]))
-        .is_empty()
+        .len(),
+        0
     );
     let card = run(&["--root", root, "describe", "P001"]);
     assert_success(&card);
@@ -2186,7 +2197,7 @@ fn unborn_git_history_reports_only_change_history_unavailable() {
                 .any(|row| row["operation"] == operation && row["availability"] == "available")
         );
     }
-    assert!(
+    assert_eq!(
         json_rows(&run(&[
             "--root",
             root,
@@ -2194,7 +2205,8 @@ fn unborn_git_history_reports_only_change_history_unavailable() {
             "-e",
             "? git_mtime(file, instant)."
         ]))
-        .is_empty()
+        .len(),
+        0
     );
 }
 
@@ -2249,7 +2261,7 @@ project_diagnostic("P991", "warning", h, file, 1, ("custom", value)) := *meta{ha
             .contains("Corpusquokkaonly")
     }));
     assert_eq!(rows, json_rows(&run_in(dir.path(), &["intents", "--json"])));
-    assert!(
+    assert_eq!(
         json_rows(&run_in(
             dir.path(),
             &[
@@ -2258,7 +2270,8 @@ project_diagnostic("P991", "warning", h, file, 1, ("custom", value)) := *meta{ha
                 "? diagnostic(\"P991\", severity, h, file, line, evidence)."
             ]
         ))
-        .is_empty()
+        .len(),
+        0
     );
     let rendered = run_in(dir.path(), &["intents", "--format=text"]);
     assert_success(&rendered);

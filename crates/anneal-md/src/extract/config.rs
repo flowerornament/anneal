@@ -782,8 +782,8 @@ default_filter = "all"
     fn config_empty_parses_to_default() {
         let config: AnnealConfig = toml::from_str("").expect("empty TOML should parse");
         assert_eq!(config.check.default_filter.as_deref(), Some("active-only"));
-        assert!(config.root.is_empty());
-        assert!(config.suppress.codes.is_empty());
+        assert_eq!(config.root.len(), 0);
+        assert_eq!(config.suppress.codes.len(), 0);
         assert!(config.suppress.rules.is_empty());
         assert_eq!(config.state.history_mode, None);
         assert_eq!(config.state.history_dir, None);
@@ -883,7 +883,7 @@ default_filter = "all"
             .expect("frontmatter field");
         assert_eq!(frontmatter.edge_kind, "Cites");
         assert!(matches!(frontmatter.direction, Direction::Forward));
-        assert!(config.suppress.codes.is_empty());
+        assert_eq!(config.suppress.codes.len(), 0);
         assert_eq!(config.suppress.rules.len(), 1);
         assert_eq!(config.suppress.rules[0].code, "E001");
         assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");
@@ -1008,7 +1008,7 @@ target = "synthesis/v17.md"
 "#;
         let config: AnnealConfig =
             toml::from_str(toml_str).expect("should parse with suppress rules");
-        assert!(config.suppress.codes.is_empty());
+        assert_eq!(config.suppress.codes.len(), 0);
         assert_eq!(config.suppress.rules.len(), 1);
         assert_eq!(config.suppress.rules[0].code, "E001");
         assert_eq!(config.suppress.rules[0].target, "synthesis/v17.md");
@@ -1022,7 +1022,7 @@ default_filter = "active-only"
 "#;
         let config: AnnealConfig =
             toml::from_str(toml_str).expect("should parse without [suppress]");
-        assert!(config.suppress.codes.is_empty());
+        assert_eq!(config.suppress.codes.len(), 0);
         assert!(config.suppress.rules.is_empty());
     }
 

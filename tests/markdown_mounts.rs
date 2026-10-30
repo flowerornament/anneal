@@ -211,7 +211,10 @@ fn pinned_mount_reads_exact_tree_with_stable_handles_and_no_checkout_mutation() 
         fs::read_to_string(foreign.join("pages/guide.md")).unwrap(),
         "# Guide\nDirty workspace.\n"
     );
-    assert!(query(&host, "? git_mtime(\"other:pages/guide.md\", instant).").is_empty());
+    assert_eq!(
+        query(&host, "? git_mtime(\"other:pages/guide.md\", instant).").len(),
+        0
+    );
     config(&host, "other", Some("deadbeef"));
     let absent = run(&host, &["--root", host.to_str().unwrap(), "status"]);
     assert!(!absent.status.success());
@@ -347,7 +350,10 @@ fn workspace_mount_probes_its_own_code_and_ignores_foreign_rules_and_policies() 
     );
     assert_eq!(rows.len(), 1);
     assert!(serde_json::to_string(&rows).unwrap().contains("true"));
-    assert!(query(&host, "? git_mtime(\"other:unselected.md\", instant).").is_empty());
+    assert_eq!(
+        query(&host, "? git_mtime(\"other:unselected.md\", instant).").len(),
+        0
+    );
     let handles = query(&host, "? *handle{id: id}.");
     assert!(
         !serde_json::to_string(&handles)
@@ -372,7 +378,7 @@ fn workspace_mount_probes_its_own_code_and_ignores_foreign_rules_and_policies() 
         .status
         .success()
     );
-    assert!(!query(&host, "? *meta{handle: \"other:pages/guide.md\", key: \"md.mount.config_ignored\", value: value}.").is_empty());
+    assert_ne!(query(&host, "? *meta{handle: \"other:pages/guide.md\", key: \"md.mount.config_ignored\", value: value}.").len(), 0);
     assert_eq!(query(&host, "? mount_repository_operation_capability(\"other:pages/guide.md\", operation, available, reason).").len(), 5);
     fs::remove_file(foreign.join("src/owned.rs")).unwrap();
     let rows = query(
@@ -575,12 +581,13 @@ fn multiple_mounts_preserve_declared_foreign_links_and_scoped_duplicate_labels()
     ] {
         assert!(text.contains(id), "{id}: {text}");
     }
-    assert!(
+    assert_eq!(
         query(
             &host,
             "? diagnostic(\"E001\", severity, subject, file, line, evidence)."
         )
-        .is_empty()
+        .len(),
+        0
     );
     let edges = query(
         &host,
@@ -639,12 +646,13 @@ fn named_assets_use_repository_window_and_exact_pin_existence() {
         2,
         "repeated synonymous references must keep distinct ids"
     );
-    assert!(
+    assert_eq!(
         query(
             &host,
             "? *content{handle: \"other:external:asset:pages/excluded.md\", text: text}."
         )
-        .is_empty()
+        .len(),
+        0
     );
     assert_eq!(
         query(
@@ -654,7 +662,10 @@ fn named_assets_use_repository_window_and_exact_pin_existence() {
         .len(),
         1
     );
-    assert!(!query(&host, "? git_mtime(\"other:payload.tsv\", instant).").is_empty());
+    assert_ne!(
+        query(&host, "? git_mtime(\"other:payload.tsv\", instant).").len(),
+        0
+    );
     config(&host, "other", Some(&pin));
     let pinned = query(
         &host,
@@ -726,19 +737,21 @@ fn mounted_selection_preserves_native_subdirectory_corpus_keys_and_config() {
         assert!(handles.iter().any(|row| row["id"]
             == "other:external:asset:formal-model/norms.md"
             && row["file"] == "other:formal-model/norms.md"));
-        assert!(
+        assert_eq!(
             query(
                 &host,
                 "? diagnostic(code, severity, subject, file, line, evidence), code = \"E001\"."
             )
-            .is_empty()
+            .len(),
+            0
         );
-        assert!(
-            !query(
+        assert_ne!(
+            query(
                 &host,
                 "? *meta{key: \"md.mount.config_ignored\", value: value}."
             )
-            .is_empty()
+            .len(),
+            0
         );
     }
     // Omitted selection preserves the owning corpus's primary and sibling roots.
@@ -814,12 +827,13 @@ fn mounted_section_placeholders_keep_their_native_non_identity_meaning() {
             "? *edge{to: target}, target starts_with \"section:\".",
         );
         assert_eq!(edges.len(), 2);
-        assert!(
+        assert_eq!(
             query(
                 &host,
                 "? diagnostic(code, severity, subject, file, line, evidence), code = \"E001\"."
             )
-            .is_empty()
+            .len(),
+            0
         );
     }
 }
@@ -1050,7 +1064,7 @@ fn mount_path_forms_preserve_ids_and_diagnostics_across_desk_locations() {
                 .lines()
                 .map(|line| serde_json::from_str::<Value>(line).unwrap())
                 .collect::<Vec<_>>();
-            assert!(!rows.is_empty());
+            assert_ne!(rows.len(), 0);
             rows.sort_by_key(Value::to_string);
             relations.push(serde_json::json!({"row_count": rows.len(), "rows": rows}));
         }

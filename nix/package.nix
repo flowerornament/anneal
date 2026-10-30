@@ -1,5 +1,5 @@
-{ pkgs, src, version }:
-pkgs.rustPlatform.buildRustPackage {
+{ pkgs, rustPlatform, src, version }:
+rustPlatform.buildRustPackage {
   pname = "anneal";
   inherit version src;
   cargoLock.lockFile = src + /Cargo.lock;

@@ -306,20 +306,21 @@ mod tests {
         );
         std::fs::write(root.join("anneal.dl"), "config frontmatter { unmapped(\"references\"). unmapped(\"refs\"). unmapped(\"parent\"). }").expect("intentions");
         let after = extract();
-        assert!(after.edges.is_empty());
+        assert_eq!(after.edges.len(), 0);
         for key in ["references", "refs", "parent"] {
             assert!(after.meta.iter().any(|row| row.key == key
                 && row.value == "missing.md"
                 && row.role == anneal_core::MetaRole::AuthoredUnmodeled));
         }
-        assert!(
+        assert_eq!(
             evaluate(
                 Some(after),
                 &["references", "refs", "parent"],
                 "? diagnostic{code: code}, code in [\"E001\", \"W007\"]."
             )
             .rows
-            .is_empty()
+            .len(),
+            0
         );
         assert_eq!(
             evaluate(

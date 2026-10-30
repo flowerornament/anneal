@@ -382,7 +382,7 @@ mod tests {
 
         let history = read_snapshot_history(&root).expect("read history");
         assert_eq!(history.entries(), &[first, second]);
-        assert!(history.warnings().is_empty());
+        assert_eq!(history.warnings().len(), 0);
         assert_eq!(history.snapshot_facts().len(), 2);
         assert_eq!(
             history.entries()[0].prelude_hash,
@@ -630,8 +630,8 @@ mod tests {
 
         let history = read_snapshot_history(&root).expect("read missing history");
 
-        assert!(history.entries().is_empty());
-        assert!(history.warnings().is_empty());
+        assert_eq!(history.entries().len(), 0);
+        assert_eq!(history.warnings().len(), 0);
     }
 
     #[test]
@@ -701,7 +701,7 @@ mod tests {
 
         let history = read_snapshot_history(&root).expect("read history");
         assert_eq!(history.entries(), &[entry]);
-        assert!(history.warnings().is_empty());
+        assert_eq!(history.warnings().len(), 0);
     }
 
     #[test]

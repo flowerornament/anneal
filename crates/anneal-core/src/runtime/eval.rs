@@ -4397,14 +4397,14 @@ mod tests {
             r#"? read("secret.md", 10, span_id, text, start_line, end_line, tokens)."#,
             database.clone(),
         );
-        assert!(read_output.rows.is_empty());
+        assert_eq!(read_output.rows.len(), 0);
 
         let full_output = evaluate_query_output_with_options(
             r#"? read_full("secret.md", content)."#,
             database,
             EvalOptions::default().with_capability(READ_FULL_CAPABILITY),
         );
-        assert!(full_output.rows.is_empty());
+        assert_eq!(full_output.rows.len(), 0);
     }
 
     #[test]
@@ -4785,7 +4785,7 @@ mod tests {
                 .with_search_provider(HiddenSearchProvider),
         );
 
-        assert!(output.rows.is_empty());
+        assert_eq!(output.rows.len(), 0);
     }
 
     #[test]
@@ -4832,7 +4832,7 @@ mod tests {
             search_database(),
             options.clone(),
         );
-        assert!(filtered.rows.is_empty());
+        assert_eq!(filtered.rows.len(), 0);
 
         let included = evaluate_query_output_with_options(
             r#"
@@ -4844,7 +4844,7 @@ mod tests {
             search_database(),
             options,
         );
-        assert!(!included.rows.is_empty());
+        assert_ne!(included.rows.len(), 0);
     }
 
     #[derive(Clone, Debug)]
@@ -5611,7 +5611,7 @@ elephant("b").
             Database::default(),
         );
         assert_eq!(before, after);
-        assert!(!before[0].is_empty());
+        assert_ne!(before[0].len(), 0);
     }
 
     #[test]
@@ -5651,8 +5651,8 @@ elephant("a").
         assert!(docs.iter().any(
             |doc| doc.contains("Find verb evidence.") && !doc.contains("Find corpus evidence.")
         ));
-        assert!(outputs[2].is_empty());
-        assert!(outputs[3].is_empty());
+        assert_eq!(outputs[2].len(), 0);
+        assert_eq!(outputs[3].len(), 0);
     }
 
     #[test]
@@ -6265,7 +6265,7 @@ elephant("a").
             Database::from_store(&store),
         );
 
-        assert!(output.rows.is_empty());
+        assert_eq!(output.rows.len(), 0);
         assert_eq!(output.warnings[0].code, "partial_history");
     }
 

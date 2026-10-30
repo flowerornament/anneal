@@ -1301,7 +1301,7 @@ pub use crate::grade::Cost;
             module_header_lines(source),
             vec!["Module header line.", "Second header line."]
         );
-        assert!(module_header_lines("pub fn a() {}\n").is_empty());
+        assert_eq!(module_header_lines("pub fn a() {}\n").len(), 0);
         assert_eq!(
             module_header_lines(
                 r##"const FIXTURE: &str = r#"
@@ -1483,7 +1483,7 @@ mod live;
     #[test]
     fn explicit_path_without_a_test_gate_is_production() {
         let source = "#[path = \"production.rs\"]\nmod production;\n";
-        assert!(test_module_declarations(source).is_empty());
+        assert_eq!(test_module_declarations(source).len(), 0);
     }
 
     #[test]

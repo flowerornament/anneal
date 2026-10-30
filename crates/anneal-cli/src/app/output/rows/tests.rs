@@ -58,7 +58,7 @@ fn eval_empty_binding_hint_uses_query_schema() {
         panic!("eval should emit rows");
     };
 
-    assert!(!rows.is_empty());
+    assert_ne!(rows.len(), 0);
     assert!(rows.iter().all(|row| row.fields.is_empty()));
     assert_eq!(
         empty_binding_hint,

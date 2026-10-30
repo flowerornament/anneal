@@ -632,7 +632,7 @@ mod tests {
             context_database(),
             strict_options.clone(),
         );
-        assert!(filtered.hits.is_empty());
+        assert_eq!(filtered.hits.len(), 0);
 
         let included = evaluate_context(
             &ContextCommand::new("urgent")
@@ -794,9 +794,9 @@ mod tests {
             ContextOutput::from_rows("unknown target", &[]).expect("empty context rows group");
 
         assert_eq!(output.goal, "unknown target");
-        assert!(output.hits.is_empty());
-        assert!(output.spans.is_empty());
-        assert!(output.neighborhood.is_empty());
+        assert_eq!(output.hits.len(), 0);
+        assert_eq!(output.spans.len(), 0);
+        assert_eq!(output.neighborhood.len(), 0);
     }
 
     #[test]

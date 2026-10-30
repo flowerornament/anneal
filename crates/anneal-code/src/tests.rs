@@ -1425,7 +1425,7 @@ fn jj_code_batch_cannot_be_merged_after_its_pin_moves() {
             .expect("config");
     let batch = CodeSource::extract_with_repository(&context(&fixture.desk, &config), &repository)
         .expect("initial batch");
-    assert!(!batch.handles.is_empty());
+    assert_ne!(batch.handles.len(), 0);
     repository_command(&fixture.desk, "jj", &["new"]);
     assert!(
         !repository.finish_jj_generation(),

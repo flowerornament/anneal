@@ -52,7 +52,7 @@ fn eval_warns_when_query_filters_retired_section_kind() {
         panic!("eval should emit rows");
     };
 
-    assert!(rows.is_empty());
+    assert_eq!(rows.len(), 0);
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("section handle kind was retired in v0.14"));
     assert!(warnings[0].contains("*span"));
@@ -77,7 +77,7 @@ fn eval_does_not_warn_for_code_section_handles() {
         panic!("eval should emit rows");
     };
 
-    assert!(warnings.is_empty());
+    assert_eq!(warnings.len(), 0);
 }
 
 #[test]

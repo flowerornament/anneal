@@ -755,8 +755,8 @@ mod tests {
             error,
             StoreError::DuplicateHandleId(ref conflict) if conflict.id.as_str() == "shared"
         ));
-        assert!(store.handles().is_empty());
-        assert!(store.generations().is_empty());
+        assert_eq!(store.handles().len(), 0);
+        assert_eq!(store.generations().len(), 0);
     }
 
     #[test]
@@ -1154,7 +1154,7 @@ mod tests {
 
         assert_eq!(store.handles().len(), 1);
         assert_eq!(store.handles()[0].id.as_str(), "b.md");
-        assert!(store.meta().is_empty());
+        assert_eq!(store.meta().len(), 0);
         assert_eq!(store.generations()[0].current, Generation::new(2));
     }
 
@@ -1269,7 +1269,7 @@ mod tests {
         );
         store.merge(empty).expect("merge empty");
 
-        assert!(store.handles().is_empty());
+        assert_eq!(store.handles().len(), 0);
         assert_eq!(store.generations()[0].current, Generation::new(2));
     }
 

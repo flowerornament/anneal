@@ -94,7 +94,7 @@ fn check_zero_errors_names_the_adjacent_non_error_set() {
     else {
         panic!("check should emit rows");
     };
-    assert!(rows.is_empty());
+    assert_eq!(rows.len(), 0);
     assert!(!gate_failed);
     assert_eq!(
         zero_result_hint,
@@ -111,12 +111,13 @@ fn check_clean_corpus_truthfully_names_zero_adjacent_rows() {
     fs::create_dir(&root).expect("create corpus root");
 
     let session = RuntimeSession::load_for_test(&root).expect("session loads");
-    assert!(
+    assert_eq!(
         session
             .eval(CHECK_DIAGNOSTIC_QUERY, ExplainOptions::disabled())
             .expect("diagnostics run")
             .rows
-            .is_empty()
+            .len(),
+        0
     );
     let output = session
         .run(RuntimeCommand::Check {
@@ -158,7 +159,7 @@ fn check_with_errors_keeps_gate_and_omits_zero_result_guidance() {
     else {
         panic!("check should emit rows");
     };
-    assert!(!rows.is_empty());
+    assert_ne!(rows.len(), 0);
     assert!(gate_failed);
     assert_eq!(zero_result_hint, None);
 }
@@ -256,6 +257,6 @@ fn explicit_eval_attaches_zero_result_guidance_but_project_verbs_do_not() {
     else {
         panic!("verb should emit rows");
     };
-    assert!(rows.is_empty());
+    assert_eq!(rows.len(), 0);
     assert_eq!(zero_result_hint, None);
 }

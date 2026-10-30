@@ -44,7 +44,7 @@ Avoid broad default dumps like raw `check --json`, empty search queries, or full
 
 ## Rust Toolchain
 
-- `rust-toolchain.toml` pins Rust 1.94.0 with `rustfmt` and `clippy`.
+- `rust-toolchain.toml` is the compiler-version source, with `rustfmt` and `clippy`. CI, advisories and release read its channel; the pinned Nix Rust input reads the same file while nixpkgs continues to supply Git and jj.
 - Use `just`. `just check` is the default gate (fmt + `install.sh` syntax + clippy + test, each step timed). Inspect `justfile` or run `just --list` for the full command surface.
 - `just build` for a release binary; `just release-verify` for release-readiness gates.
 - `just audit` = architecture fitness functions: `cargo-machete` (unused deps) + `cargo-deny` (advisories/bans/licenses/sources, configured in `deny.toml`). `just check` runs the offline subset (machete + deny bans/licenses/sources), guarded to skip if the tools aren't installed.

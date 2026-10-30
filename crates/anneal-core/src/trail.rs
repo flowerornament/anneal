@@ -767,14 +767,15 @@ mod tests {
 
         let mcp_actor = ActorContext::anonymous_mcp();
         let mcp_ctx = TrailContext::from(&mcp_actor);
-        assert!(
+        assert_eq!(
             store
                 .query(
                     TrailQuery::for_session("session-1").expect("valid query"),
                     &mcp_ctx
                 )
                 .expect("public query skips private rows")
-                .is_empty()
+                .len(),
+            0
         );
         let err = store
             .query(
@@ -905,14 +906,15 @@ mod tests {
 
         let mcp_actor = ActorContext::anonymous_mcp();
         let mcp_ctx = TrailContext::from(&mcp_actor);
-        assert!(
+        assert_eq!(
             store
                 .query(
                     TrailQuery::for_session("session-1").expect("valid query"),
                     &mcp_ctx
                 )
                 .expect("actor without team visibility cannot read team trail rows")
-                .is_empty()
+                .len(),
+            0
         );
 
         let team_actor =

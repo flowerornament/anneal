@@ -2703,7 +2703,7 @@ mod tests {
             .expect("search primitive is planned");
 
         assert_eq!(search_atom.0.len(), 1);
-        assert!(!search_atom.1.is_empty());
+        assert_ne!(search_atom.1.len(), 0);
         assert!(
             search_atom.1.len() > search_atom.0.len(),
             "non-required search fields should be modeled as candidate outputs"
@@ -2719,7 +2719,7 @@ mod tests {
 
         let planned = plan(&analyzed).expect("checked-in prelude plans");
 
-        assert!(!planned.global.strata.is_empty());
+        assert_ne!(planned.global.strata.len(), 0);
         assert!(
             planned
                 .catalog

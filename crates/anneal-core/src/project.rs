@@ -1252,7 +1252,7 @@ mod tests {
                 ConfigEntry::scalar("code_path_root.root", "bin"),
             ]
         );
-        assert!(extension.program().statements.is_empty());
+        assert_eq!(extension.program().statements.len(), 0);
     }
 
     #[test]
@@ -1526,7 +1526,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["helper.seed"]);
-        assert!(extension.discovery().entries().is_empty());
+        assert_eq!(extension.discovery().entries().len(), 0);
     }
 
     #[test]

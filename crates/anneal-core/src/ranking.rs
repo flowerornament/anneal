@@ -1483,7 +1483,7 @@ mod tests {
             Some(FIELD_BODY),
         );
 
-        assert!(hits.is_empty());
+        assert_eq!(hits.len(), 0);
     }
 
     #[test]
@@ -1518,7 +1518,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        assert!(parent_cluster_hits.is_empty());
+        assert_eq!(parent_cluster_hits.len(), 0);
     }
 
     #[test]

@@ -404,7 +404,7 @@ mod tests {
             } if expected_source == SourceName::from(SOURCE_NAME)
                 && actual_source == SourceName::from("other-source")
         ));
-        assert!(store.generations().is_empty());
+        assert_eq!(store.generations().len(), 0);
     }
 
     #[test]
@@ -419,6 +419,6 @@ mod tests {
             .expect_err("missing required config rejects");
 
         assert!(err.to_string().contains("test.required"));
-        assert!(store.generations().is_empty());
+        assert_eq!(store.generations().len(), 0);
     }
 }
