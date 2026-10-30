@@ -1295,6 +1295,32 @@ mod tests {
     }
 
     #[test]
+    fn cmark_empty_wikilink_display_has_bounded_events() {
+        // RUSTSEC-2026-0414: 16 empty-display wikilinks previously emitted
+        // 327,676 events instead of 65. Stop at the bound plus one so this
+        // control fails safely even when the vulnerable parser is restored.
+        let repetitions = 16;
+        let body = "[[a|]] ".repeat(repetitions);
+        let event_bound = 4 * repetitions + 1;
+        let event_count = Parser::new_ext(&body, Options::ENABLE_WIKILINKS)
+            .take(event_bound + 1)
+            .count();
+        assert_eq!(
+            event_count, event_bound,
+            "wikilink event growth must be linear"
+        );
+
+        let (_, refs) = cmark_scan(&format!("{body}[[sentinel]]"));
+        assert_eq!(
+            refs.iter()
+                .filter(|reference| reference.raw == "sentinel")
+                .count(),
+            1,
+            "the trailing reference must be visited exactly once"
+        );
+    }
+
+    #[test]
     fn cmark_wikilink_extraction() {
         let body = "[[wiki-target]]\n";
         let (result, refs) = cmark_scan(body);
